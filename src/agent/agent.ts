@@ -18,13 +18,16 @@ export interface Agent {
   setPersona?(text: string): void;
 }
 
-/** Choisit l'agent Gemini si une clé est présente, sinon le fallback local. */
-export function createAgent(hooks: AgentHooks): Agent {
-  const key = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-  if (key && key.trim()) {
-    return createGeminiAgent(key.trim(), hooks);
+/**
+ * Choisit l'agent Gemini si une clé est fournie, sinon le fallback local.
+ * La clé est passée par main.ts (lue UNIQUEMENT en dev), jamais lue ici — pour
+ * ne pas l'inliner dans un build de prod.
+ */
+export function createAgent(hooks: AgentHooks, apiKey?: string): Agent {
+  if (apiKey && apiKey.trim()) {
+    return createGeminiAgent(apiKey.trim(), hooks);
   }
-  hooks.log('ℹ pas de clé Gemini — agent local (mots-clés). Voir .env.local.example');
+  hooks.log('ℹ pas de clé Gemini (texte) — agent local (mots-clés). Voir .env.local.example');
   return createLocalAgent(hooks);
 }
 

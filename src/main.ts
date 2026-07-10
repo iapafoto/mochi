@@ -10,7 +10,7 @@ import { Dispatcher } from './agent/dispatcher';
 import { DevPanel } from './ui/devPanel';
 import type { Agent } from './agent/agent';
 import { createAgent } from './agent/agent';
-import { LiveConversation } from './agent/live';
+import { LiveConversation, type LiveAccess } from './agent/live';
 import { DEFAULT_PERSONA, buildSystemInstruction } from './agent/persona';
 import { EmoteLayer } from './fx/emotes';
 import { MoodEngine, ambientFromMood, restingFaceFromMood } from './affect/mood';
@@ -154,22 +154,38 @@ const speech = new SpeechInput({
 });
 panel.setVoiceSupported(speech.supported);
 
+// Clé Gemini brute : lue UNIQUEMENT en dev (localhost). En build de prod, on ne
+// la référence pas → elle n'est jamais inlinée dans le bundle public. En prod, la
+// voix Live passe par un jeton éphémère fabriqué côté serveur (voir plus bas).
+const devKey = import.meta.env.DEV
+  ? (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim()
+  : undefined;
+
 // L'agent (Gemini si clé présente, sinon règles locales) traduit le texte en
 // intentions et appelle dispatch pour chacune, plus un babil pendant qu'il « parle ».
-agent = createAgent({
-  dispatch: (call) => {
-    const res = dispatcher.dispatch(call);
-    if (!res.ok) panel.logLine(`⚠ ${res.name}: ${res.detail}`);
+agent = createAgent(
+  {
+    dispatch: (call) => {
+      const res = dispatcher.dispatch(call);
+      if (!res.ok) panel.logLine(`⚠ ${res.name}: ${res.detail}`);
+    },
+    babble: (ms, mood) => sound.babble(ms, mood),
+    log: (line) => panel.logLine(line),
   },
-  babble: (ms, mood) => sound.babble(ms, mood),
-  log: (line) => panel.logLine(line),
-});
+  devKey,
+);
 
-// Conversation vocale Live (vraie voix streamée) — nécessite la clé Gemini.
+// Conversation vocale Live (vraie voix streamée).
+// - En dev : clé brute locale.
+// - En prod : jeton éphémère fabriqué par /api/live-token.php (la clé reste serveur).
 // Les sons kawaii sont coupés pendant la session pour ne pas parasiter la voix.
-const liveKey = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim();
-if (liveKey) {
-  live = new LiveConversation(liveKey, {
+const liveAccess: LiveAccess | null = devKey
+  ? { apiKey: devKey }
+  : import.meta.env.PROD
+    ? { tokenEndpoint: '/api/live-token.php' }
+    : null;
+if (liveAccess) {
+  live = new LiveConversation(liveAccess, {
     onStatus: (status, detail) => {
       panel.setLiveStatus(status, detail);
       if (status === 'error' && detail) panel.logLine(`⚠ Live : ${detail}`);
