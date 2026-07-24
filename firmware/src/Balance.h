@@ -28,8 +28,10 @@ class Balance {
   // Les écritures de float 32 bits alignés sont atomiques sur ESP32 : les
   // setters ci-dessous peuvent être appelés depuis le cœur 0 sans verrou.
   void applyDefaultTuning();            // recharge les constantes de config.h
-  void setKpStab(float v) { kpStab_ = v; }
-  void setKdStab(float v) { kdStab_ = v; }
+  // Gains de la boucle interne en forme vitesse : v = Kp·θ + Ki·∫θ + Kd·θ̇.
+  void setKpAng(float v) { kpAng_ = v; } // θ  → vitesse (raideur)      [console `d`]
+  void setKiAng(float v) { kiAng_ = v; } // ∫θ → vitesse (intégrale)    [console `p`]
+  void setKdAng(float v) { kdAng_ = v; } // θ̇  → vitesse (amortissement) [console `e`]
   void setKpSpeed(float v) { kpSpeed_ = v; }
   void setKiSpeed(float v) { kiSpeed_ = v; }
   void setKpPos(float v) { kpPos_ = v; }
@@ -53,8 +55,9 @@ class Balance {
   // poser le robot au sol, sans les mains. Corrige la dérive thermique du biais.
   void requestGyroCalibration() { gyroCalibRequest_ = true; }
 
-  float kpStab() const { return kpStab_; }
-  float kdStab() const { return kdStab_; }
+  float kpAng() const { return kpAng_; }
+  float kiAng() const { return kiAng_; }
+  float kdAng() const { return kdAng_; }
   float kpSpeed() const { return kpSpeed_; }
   float kiSpeed() const { return kiSpeed_; }
   float kpPos() const { return kpPos_; }
@@ -106,12 +109,14 @@ class Balance {
   bool motorsOn_ = false;
   float pitchDeg_ = 0.0f;      // inclinaison filtrée
   float lastTargetDeg_ = 0.0f; // dernier angle de consigne (pour la console)
-  float motorSpeedMmS_ = 0.0f; // vitesse intégrée (sortie boucle stabilité)
-  float speedInteg_ = 0.0f;    // intégrateur du PID de vitesse
+  float motorSpeedMmS_ = 0.0f; // vitesse commandée (sortie boucle stabilité)
+  float speedInteg_ = 0.0f;    // intégrateur du PID de vitesse (boucle externe)
+  float angleInteg_ = 0.0f;    // intégrateur ∫θ de la boucle interne (terme Ki)
 
   // --- Réglages à chaud (écrits cœur 0 par la console, lus cœur 1) ---
-  volatile float kpStab_ = 0.0f;   // initialisés depuis config.h dans begin()
-  volatile float kdStab_ = 0.0f;
+  volatile float kpAng_ = 0.0f;    // initialisés depuis config.h dans begin()
+  volatile float kiAng_ = 0.0f;    // (forme vitesse : v = Kp·θ + Ki·∫θ + Kd·θ̇)
+  volatile float kdAng_ = 0.0f;
   volatile float kpSpeed_ = 0.0f;
   volatile float kiSpeed_ = 0.0f;
   volatile float kpPos_ = 0.0f;    // rappel vers l'ancre de position (0 = off)

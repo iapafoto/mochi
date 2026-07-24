@@ -73,11 +73,21 @@ constexpr float LOOP_DT = 1.0f / LOOP_HZ;
 // (jamais parfaitement 0 à cause du montage). À ajuster à ±0.1° près.
 constexpr float BALANCE_OFFSET_DEG = 0.0f;
 
-// PID de stabilité (boucle interne, rapide) : angle → accélération moteur.
-// Valeurs issues du tuning live (essais 9-11, MPU remonté à l'endroit).
-constexpr float KP_STAB = 15.0f;
-constexpr float KI_STAB = 0.0f;
-constexpr float KD_STAB = 35.0f;
+// PID de stabilité (boucle interne, rapide) — FORME VITESSE (refactor du 24/07,
+// cf. docs/COMPARAISON.md §1) : la boucle sort une VITESSE roue, plus une
+// accélération intégrée. C'est la forme naturelle pour des steppers (actionneurs
+// de vitesse) et celle de rekomerio.
+//   v = KP_ANGLE·θ + KI_ANGLE·∫θ + KD_ANGLE·θ̇
+// KD_ANGLE·θ̇ est l'AMORTISSEMENT DIRECT qui manquait à l'ancienne forme
+// accélération (aucun terme en θ̇). Défauts = run 18 (raideur seule) : Kp=66, le
+// reste à 0 → régler au banc en montant KD_ANGLE. Console : `d`=Kp (raideur),
+// `p`=Ki (intégrale), `e`=Kd (amortissement).
+constexpr float KP_ANGLE = 66.0f;  // θ  → vitesse (raideur / rattrapage immédiat)
+constexpr float KI_ANGLE = 0.0f;   // ∫θ → vitesse (anti-dérive lente)
+constexpr float KD_ANGLE = 0.0f;   // θ̇  → vitesse (AMORTISSEMENT — le terme ajouté)
+// Borne anti-windup de l'intégrateur d'angle ∫θ (en deg·s). À Ki≈15 ⇒ ±20 deg·s
+// ≈ ±300 mm/s d'autorité intégrale ; le clamp final ±MAX_WHEEL_SPEED reste le garde-fou.
+constexpr float ANGLE_INTEG_LIMIT = 20.0f;
 
 // PID de vitesse (boucle externe, lente) : erreur de vitesse → angle de consigne.
 // C'est lui qui fait « pencher pour avancer » et qui empêche la dérive.

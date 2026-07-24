@@ -77,7 +77,7 @@ pour l'aide complète. Commandes principales :
 | `m` | armer/désarmer les moteurs (banc d'essai) |
 | `a x` `a y` `a -x` `a -y` | axe du tangage (penché en **avant** ⇒ pitch **positif**) |
 | `z` | capturer l'offset : la pose actuelle devient 0° |
-| `p` `d` `v` `i` `o` `<val>` | KP_STAB, KD_STAB, KP_SPEED, KI_SPEED, offset |
+| `d` `p` `e` `v` `i` `o` `<val>` | Kp raideur, Ki intégrale, Kd amortissement (θ̇), KP_SPEED, KI_SPEED, offset |
 | `w` / `f` | sauver en NVS / retour aux défauts de `config.h` |
 
 Ordre conseillé (robot **roues en l'air** au début, puis fils tenus au-dessus) :
@@ -89,10 +89,12 @@ Ordre conseillé (robot **roues en l'air** au début, puis fils tenus au-dessus)
    pour avancer** (rouler sous la chute). Sinon inverser
    `INVERT_LEFT`/`INVERT_RIGHT` dans `config.h` (seul réglage qui reflashe).
 3. **Offset** — tenir le robot à son point d'équilibre réel, taper `z`.
-4. **`p` (KP_STAB)** — augmenter jusqu'à ce que le robot réagisse vite et se
-   maintienne ; trop haut = oscillations nerveuses.
-5. **`d` (KD_STAB)** — augmenter pour amortir ces oscillations (mais trop =
-   bruit / tremblement).
+4. **`d` (raideur Kp)** — augmenter jusqu'à ce que le robot réagisse vite et se
+   maintienne ; trop haut = oscillations nerveuses. (Point de départ : `d 66`.)
+5. **`e` (amortissement Kd, θ̇)** — augmenter pour amortir ces oscillations. C'est
+   le terme direct ajouté par le refactor « forme vitesse » (cf.
+   `../docs/COMPARAISON.md` §1) ; trop = bruit / tremblement. `p` (Ki, intégrale)
+   reste à 0 au début — ne le monter que si le robot dérive lentement.
 6. **`v` / `i` (boucle vitesse)** — une fois qu'il tient debout, régler pour
    qu'il **ne dérive pas** et revienne se poser sans avancer.
 7. `w` pour sauver, puis **reporter les valeurs finales dans `config.h`**

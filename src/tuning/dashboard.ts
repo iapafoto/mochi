@@ -175,8 +175,9 @@ type Gain = {
   step: number; dec: number; min: number;
 };
 const GAINS: Gain[] = [
-  { cmd: 'd', label: 'Nervosité',        hint: 'gyro → roue : la raideur, le rattrapage immédiat', step: 2,      dec: 1, min: 0 },
-  { cmd: 'p', label: 'Insistance',       hint: 'angle → roue : agit comme un intégral',            step: 1,      dec: 1, min: 0 },
+  { cmd: 'd', label: 'Nervosité',        hint: 'angle → vitesse (Kp) : la raideur, le rattrapage immédiat', step: 2, dec: 1, min: 0 },
+  { cmd: 'p', label: 'Insistance',       hint: '∫angle → vitesse (Ki) : agit comme un intégral',   step: 1,      dec: 1, min: 0 },
+  { cmd: 'e', label: 'Amortissement',    hint: 'gyro θ̇ → vitesse (Kd) : freine le mouvement (terme ajouté)', step: 1, dec: 1, min: 0 },
   { cmd: 'v', label: 'Tenue de vitesse', hint: 'vitesse → angle de consigne (butée ±12°)',         step: 0.005,  dec: 4, min: 0 },
   { cmd: 'i', label: 'Anti-dérive',      hint: 'intégral lent de la boucle vitesse',               step: 0.0005, dec: 5, min: 0 },
   { cmd: 'q', label: 'Ancre position',   hint: 'rappel vers le point de départ (borné 100 mm/s)',  step: 0.05,   dec: 2, min: 0 },
@@ -185,13 +186,15 @@ const GAINS: Gain[] = [
 
 const gainVal: Record<string, number> = {};
 
-// printState : "[tune] p=12.000 d=48.000 v=0.0250 i=0.00100 q=0.400 o=+0.81 axe=…"
-const RE_GAINS = /(?:^|\s)p=([\d.]+)\s+d=([\d.]+)\s+v=([\d.]+)\s+i=([\d.]+)\s+q=([\d.]+)\s+o=([-+][\d.]+)/;
+// printState : "[tune] p=0.000 d=66.000 v=0.0250 i=0.00100 q=0.400 o=+0.81 e=0.000 axe=…"
+// `e=` (amortissement Kd) est en fin de bloc → optionnel dans le regex (compat firmware ancien).
+const RE_GAINS = /(?:^|\s)p=([\d.]+)\s+d=([\d.]+)\s+v=([\d.]+)\s+i=([\d.]+)\s+q=([\d.]+)\s+o=([-+][\d.]+)(?:\s+e=([\d.]+))?/;
 
 function parseGains(line: string): void {
   const m = line.match(RE_GAINS);
   if (!m) return;
   ['p', 'd', 'v', 'i', 'q', 'o'].forEach((k, i) => { gainVal[k] = parseFloat(m[i + 1]); });
+  if (m[7] !== undefined) gainVal['e'] = parseFloat(m[7]);
   drawGains();
 }
 

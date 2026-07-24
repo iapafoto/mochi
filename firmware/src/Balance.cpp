@@ -32,8 +32,9 @@ void Balance::begin(FastAccelStepper* left, FastAccelStepper* right, MPU6050* mp
 }
 
 void Balance::applyDefaultTuning() {
-  kpStab_ = KP_STAB;
-  kdStab_ = KD_STAB;
+  kpAng_ = KP_ANGLE;
+  kiAng_ = KI_ANGLE;
+  kdAng_ = KD_ANGLE;
   kpSpeed_ = KP_SPEED;
   kiSpeed_ = KI_SPEED;
   kpPos_ = KP_POS;
@@ -228,10 +229,16 @@ void Balance::update() {
   targetAngle += gestureAngleBias(now); // les gestes penchent brièvement le robot
   lastTargetDeg_ = targetAngle;
 
-  // --- Boucle interne (stabilité) : angle → accélération, intégrée en vitesse ---
+  // --- Boucle interne (stabilité) : FORME VITESSE v = Kp·θ + Ki·∫θ + Kd·θ̇ ---
+  // Refactor 24/07 (cf. docs/COMPARAISON.md §1). L'ancienne forme sortait une
+  // accélération intégrée en vitesse (v = kd·θ + kp·∫θ), SANS terme en θ̇ : pas
+  // d'amortissement direct, et le gyro brut intégré transformait tout biais en
+  // dérive de vitesse. Ici la sortie EST la vitesse : kdAng_·gyroRate amortit
+  // immédiatement, et le biais gyro ne donne qu'un offset constant (pas une rampe).
   const float angleError = pitchDeg_ - targetAngle;
-  const float accel = kpStab_ * angleError + kdStab_ * gyroRate;
-  motorSpeedMmS_ += accel * LOOP_DT;
+  angleInteg_ += angleError * LOOP_DT;
+  angleInteg_ = constrain(angleInteg_, -ANGLE_INTEG_LIMIT, ANGLE_INTEG_LIMIT); // anti-windup
+  motorSpeedMmS_ = kpAng_ * angleError + kiAng_ * angleInteg_ + kdAng_ * gyroRate;
   motorSpeedMmS_ = constrain(motorSpeedMmS_, -MAX_WHEEL_SPEED_MM_S, MAX_WHEEL_SPEED_MM_S);
 
   // --- Direction : différentiel gauche/droite ---
@@ -270,6 +277,7 @@ void Balance::setMotorsEnabled(bool on) {
 void Balance::resetControl() {
   motorSpeedMmS_ = 0.0f;
   speedInteg_ = 0.0f;
+  angleInteg_ = 0.0f;
   lastTargetDeg_ = 0.0f;
   taskENTER_CRITICAL(&mux_);
   cmdSpeed_ = 0.0f;

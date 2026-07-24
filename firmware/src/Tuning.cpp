@@ -25,18 +25,32 @@ void Tuning::begin(Balance* balance) {
   // log d'erreur NOT_FOUND de nvs_open tant que rien n'a été sauvé).
   Preferences prefs;
   if (prefs.begin(NVS_NAMESPACE, /*readOnly=*/false)) {
-    if (prefs.isKey("kpStab")) {
-      balance_->setKpStab(prefs.getFloat("kpStab"));
-      balance_->setKdStab(prefs.getFloat("kdStab"));
-      balance_->setKpSpeed(prefs.getFloat("kpSpeed"));
-      balance_->setKiSpeed(prefs.getFloat("kiSpeed"));
+    const bool hasNew = prefs.isKey("kpAng");  // format forme-vitesse (Kp/Ki/Kd)
+    const bool hasOld = prefs.isKey("kdStab"); // ancien format (boucle en accélération)
+    if (hasNew || hasOld) {
+      if (hasNew) {
+        balance_->setKpAng(prefs.getFloat("kpAng", balance_->kpAng()));
+        balance_->setKiAng(prefs.getFloat("kiAng", balance_->kiAng()));
+        balance_->setKdAng(prefs.getFloat("kdAng", balance_->kdAng()));
+      } else {
+        // Migration ancien → nouveau, PAR FONCTION (cf. docs/COMPARAISON.md §1) :
+        // l'ancien `d` (kdStab = raideur) devient Kp ; l'ancien `p` (kpStab =
+        // intégrale) devient Ki ; Kd (amortissement, nouveau) garde son défaut 0.
+        // Préserve le réglage du run 18 (kdStab=66 → Kp=66).
+        balance_->setKpAng(prefs.getFloat("kdStab", balance_->kpAng()));
+        balance_->setKiAng(prefs.getFloat("kpStab", balance_->kiAng()));
+      }
+      balance_->setKpSpeed(prefs.getFloat("kpSpeed", balance_->kpSpeed()));
+      balance_->setKiSpeed(prefs.getFloat("kiSpeed", balance_->kiSpeed()));
       balance_->setKpPos(prefs.getFloat("kpPos", balance_->kpPos()));
-      balance_->setOffsetDeg(prefs.getFloat("offset"));
+      balance_->setOffsetDeg(prefs.getFloat("offset", balance_->offsetDeg()));
       balance_->setPitchAxis(prefs.getUChar("axis", 0), (int8_t)prefs.getChar("sign", 1));
       balance_->setInvertLeft(prefs.getBool("invL", balance_->invertLeft()));
       balance_->setInvertRight(prefs.getBool("invR", balance_->invertRight()));
       balance_->setRateSign((int8_t)prefs.getChar("rateS", 1));
-      Serial.println("[tune] reglages NVS recharges (`g` pour voir, `f` pour defauts usine)");
+      Serial.println(hasNew
+        ? "[tune] reglages NVS recharges (`g` pour voir, `f` pour defauts usine)"
+        : "[tune] NVS ancien format migre (d=raideur->Kp, p->Ki, amortissement e=0) — faire `w` pour figer");
     }
     prefs.end();
   }
@@ -84,8 +98,13 @@ void Tuning::handleLine(char* line) {
   switch (cmd) {
     case '?': printHelp(); break;
     case 'g': printState(); break;
-    case 'p': balance_->setKpStab(atof(arg)); printState(); break;
-    case 'd': balance_->setKdStab(atof(arg)); printState(); break;
+    // Lettres HISTORIQUES conservées (compat dashboard web + mémoire musculaire).
+    // Forme vitesse : d = raideur (Kp, θ→v) · p = intégrale (Ki, ∫θ→v) ·
+    // e = amortissement (Kd, θ̇→v, le terme ajouté). Le croisement lettre↔gain est
+    // volontaire pour ne pas casser tuning.html ni le réglage `d=66` connu-bon.
+    case 'd': balance_->setKpAng(atof(arg)); printState(); break;
+    case 'p': balance_->setKiAng(atof(arg)); printState(); break;
+    case 'e': balance_->setKdAng(atof(arg)); printState(); break;
     case 'v': balance_->setKpSpeed(atof(arg)); printState(); break;
     case 'i': balance_->setKiSpeed(atof(arg)); printState(); break;
     case 'q': balance_->setKpPos(atof(arg)); printState(); break;
@@ -151,8 +170,9 @@ void Tuning::printHelp() {
   Serial.println(
       "[tune] commandes (moniteur serie, fin de ligne \\n) :\n"
       "  g          afficher gains + etat\n"
-      "  p <val>    KP_STAB   (angle -> accel)\n"
-      "  d <val>    KD_STAB   (amortissement gyro)\n"
+      "  d <val>    raideur Kp    : angle -> vitesse (rattrapage immediat)\n"
+      "  p <val>    integrale Ki  : somme(angle) -> vitesse (anti-derive)\n"
+      "  e <val>    amortissement Kd : gyro -> vitesse (freine, NOUVEAU)\n"
       "  v <val>    KP_SPEED  (boucle vitesse)\n"
       "  i <val>    KI_SPEED  (anti-derive)\n"
       "  q <val>    KP_POS    (rappel vers le point d'engagement ; 0 = off)\n"
@@ -172,9 +192,9 @@ void Tuning::printHelp() {
 
 void Tuning::printState() {
   Serial.printf(
-      "[tune] p=%.3f d=%.3f v=%.4f i=%.5f q=%.3f o=%+.2f axe=%s%c invL=%d invR=%d | pitch=%+.2f glt=%lu %s%s\n",
-      balance_->kpStab(), balance_->kdStab(), balance_->kpSpeed(), balance_->kiSpeed(),
-      balance_->kpPos(), balance_->offsetDeg(), balance_->pitchSign() < 0 ? "-" : "",
+      "[tune] p=%.3f d=%.3f v=%.4f i=%.5f q=%.3f o=%+.2f e=%.3f axe=%s%c invL=%d invR=%d | pitch=%+.2f glt=%lu %s%s\n",
+      balance_->kiAng(), balance_->kpAng(), balance_->kpSpeed(), balance_->kiSpeed(),
+      balance_->kpPos(), balance_->offsetDeg(), balance_->kdAng(), balance_->pitchSign() < 0 ? "-" : "",
       balance_->pitchAxis() ? 'y' : 'x', balance_->invertLeft(), balance_->invertRight(),
       balance_->pitchDeg(), (unsigned long)balance_->glitchCount(),
       stateName(balance_->state()), balance_->armed() ? "" : " (desarme)");
@@ -186,8 +206,11 @@ void Tuning::save() {
     Serial.println("[tune] ERREUR : NVS inaccessible");
     return;
   }
-  prefs.putFloat("kpStab", balance_->kpStab());
-  prefs.putFloat("kdStab", balance_->kdStab());
+  prefs.putFloat("kpAng", balance_->kpAng());
+  prefs.putFloat("kiAng", balance_->kiAng());
+  prefs.putFloat("kdAng", balance_->kdAng());
+  prefs.remove("kpStab"); // purge de l'ancien format (boucle en accélération)
+  prefs.remove("kdStab");
   prefs.putFloat("kpSpeed", balance_->kpSpeed());
   prefs.putFloat("kiSpeed", balance_->kiSpeed());
   prefs.putFloat("kpPos", balance_->kpPos());
