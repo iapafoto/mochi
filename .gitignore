@@ -9,3 +9,6 @@ dist/
 
 # Artefacts de test générés
 scripts/out/
+
+# Hash du mot de passe Basic Auth (ne pas versionner ; reste copié dans dist/ au build)
+public/.htpasswd

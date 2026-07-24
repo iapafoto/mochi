@@ -13,6 +13,7 @@ export const Op = {
   BOW: 0x11,
   WIGGLE: 0x12,
   LOOK: 0x20, // int8 dir
+  CALIBRATE: 0x30, // recalibre l'IMU (robot immobile+vertical, ~2 s, moteurs coupés)
 } as const;
 
 export type Opcode = (typeof Op)[keyof typeof Op];

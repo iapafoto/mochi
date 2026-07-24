@@ -7,6 +7,7 @@
 
 const OUTPUT_RATE = 24000;
 const OFF_HANGOVER_MS = 140; // évite le clignotement parle/écoute entre 2 morceaux, sans trop retarder la reprise du micro
+const MAKEUP_GAIN = 3.0; // le PCM de Gemini n'est pas à pleine échelle → on remonte (limiteur derrière)
 
 export interface VoicePlayerCallbacks {
   /** true dès qu'un morceau est planifié, false quand la file se vide (après hangover). */
@@ -18,6 +19,10 @@ export interface VoicePlayerCallbacks {
 export class VoicePlayer {
   private ctx: AudioContext | null = null;
   private gain: GainNode | null = null;
+  private tail: AudioNode | null = null; // dernier nœud avant la sortie (gain → limiteur)
+  private streamDest: MediaStreamAudioDestinationNode | null = null;
+  private sinkEl: HTMLAudioElement | null = null;
+  private routedToElement = false; // true si la sortie passe par le <audio> (haut-parleur mobile)
   private nextTime = 0;
   private sources = new Set<AudioBufferSourceNode>();
   private speaking = false;
@@ -34,7 +39,29 @@ export class VoicePlayer {
   /** À appeler dans un geste utilisateur pour autoriser l'audio. */
   async resume(): Promise<void> {
     const ctx = this.ensure();
-    if (ctx && ctx.state === 'suspended') await ctx.resume();
+    if (!ctx) return;
+
+    // IMPORTANT : démarrer le <audio> element AVANT tout `await`, pendant qu'on
+    // est encore dans la fenêtre synchrone du geste utilisateur. Une capture
+    // micro (getUserMedia) active fait basculer Android sur le flux « voice
+    // communication » (volume d'appel, faible) pour l'AudioContext. Jouer via un
+    // HTMLAudioElement le remet sur le flux « média » (STREAM_MUSIC), fort, comme
+    // une vidéo. On garde ctx.destination en repli tant que l'élément ne joue pas.
+    if (this.sinkEl && !this.routedToElement) {
+      const play = this.sinkEl.play();
+      if (play) {
+        play
+          .then(() => {
+            this.tail?.disconnect(ctx.destination); // évite le double son
+            this.routedToElement = true;
+          })
+          .catch(() => {
+            /* autoplay bloqué : on reste sur ctx.destination (repli) */
+          });
+      }
+    }
+
+    if (ctx.state === 'suspended') await ctx.resume();
   }
 
   enqueue(base64Pcm24: string): void {
@@ -96,6 +123,15 @@ export class VoicePlayer {
 
   async close(): Promise<void> {
     this.clear();
+    if (this.sinkEl) {
+      try {
+        this.sinkEl.pause();
+        this.sinkEl.srcObject = null;
+        this.sinkEl.remove();
+      } catch {
+        /* déjà libéré */
+      }
+    }
     if (this.ctx && this.ctx.state !== 'closed') {
       try {
         await this.ctx.close();
@@ -105,6 +141,10 @@ export class VoicePlayer {
     }
     this.ctx = null;
     this.gain = null;
+    this.tail = null;
+    this.streamDest = null;
+    this.sinkEl = null;
+    this.routedToElement = false;
   }
 
   private markSpeaking(on: boolean): void {
@@ -136,9 +176,39 @@ export class VoicePlayer {
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) return null;
     this.ctx = new Ctor({ latencyHint: 'interactive' });
+
     this.gain = this.ctx.createGain();
-    this.gain.gain.value = 1;
-    this.gain.connect(this.ctx.destination);
+    this.gain.gain.value = MAKEUP_GAIN;
+
+    // Limiteur : empêche la saturation quand on pousse le gain de compensation.
+    const limiter = this.ctx.createDynamicsCompressor();
+    limiter.threshold.value = -1.5;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.1;
+    this.gain.connect(limiter);
+    this.tail = limiter;
+
+    // Chemin direct (repli, actif par défaut). resume() bascule vers le <audio>
+    // element s'il parvient à jouer (haut-parleur mobile au lieu de l'écouteur).
+    limiter.connect(this.ctx.destination);
+    try {
+      this.streamDest = this.ctx.createMediaStreamDestination();
+      limiter.connect(this.streamDest);
+      const el = new Audio();
+      el.autoplay = true;
+      el.volume = 1;
+      (el as HTMLAudioElement & { playsInline: boolean }).playsInline = true;
+      el.srcObject = this.streamDest.stream;
+      // Attaché au DOM (invisible) : certains Android ne routent l'élément vers
+      // le flux « média » que s'il fait partie du document.
+      el.style.display = 'none';
+      document.body.appendChild(el);
+      this.sinkEl = el;
+    } catch {
+      /* MediaStreamDestination indisponible : on reste sur ctx.destination */
+    }
     return this.ctx;
   }
 }

@@ -1,0 +1,835 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}</style></head><body>
+<title>Mochi — Câblage & montage</title>
+<style>
+  :root {
+    --bg: #f6f2ee;
+    --surface: #fffdfb;
+    --surface-2: #efe8e1;
+    --ink: #2a2430;
+    --ink-soft: #6d6474;
+    --hair: #e2d9d0;
+    --accent: #ff5d8f;      /* fraise kawaii — utilisé avec parcimonie */
+    --accent-ink: #b83a68;
+    --ok: #2f9e6b;
+    --warn: #cf7a12;
+    --danger: #d6453f;
+    /* couleurs de fils (constantes, lisibles sur les 2 fonds) */
+    --w-12v: #e0464e;
+    --w-5v:  #f08a24;
+    --w-33v: #d8a90b;
+    --w-i2c: #22a8bd;
+    --w-mot: #7a5cff;
+    --w-son: #2f9e6b;
+    --w-gnd: #8b8494;
+    --blk-fill: #fffdfb;
+    --blk-stroke: #c9bfb6;
+    --font-sans: ui-sans-serif, "Segoe UI", Roboto, -apple-system, system-ui, sans-serif;
+    --font-mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17141b;
+      --surface: #211c28;
+      --surface-2: #2b2533;
+      --ink: #efe9f2;
+      --ink-soft: #a89fb2;
+      --hair: #362f40;
+      --accent: #ff6f9c;
+      --accent-ink: #ff9bbb;
+      --blk-fill: #241f2c;
+      --blk-stroke: #4a4157;
+      --w-gnd: #9a92a6;
+      --w-33v: #e6bd2a;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f2ee; --surface: #fffdfb; --surface-2: #efe8e1; --ink: #2a2430;
+    --ink-soft: #6d6474; --hair: #e2d9d0; --accent: #ff5d8f; --accent-ink: #b83a68;
+    --blk-fill: #fffdfb; --blk-stroke: #c9bfb6; --w-gnd: #8b8494; --w-33v: #d8a90b;
+  }
+  :root[data-theme="dark"] {
+    --bg: #17141b; --surface: #211c28; --surface-2: #2b2533; --ink: #efe9f2;
+    --ink-soft: #a89fb2; --hair: #362f40; --accent: #ff6f9c; --accent-ink: #ff9bbb;
+    --blk-fill: #241f2c; --blk-stroke: #4a4157; --w-gnd: #9a92a6; --w-33v: #e6bd2a;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .page {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 22px; }
+  .prose { max-width: 68ch; }
+
+  /* ---------- Header ---------- */
+  header.hero {
+    padding: 64px 0 40px;
+    border-bottom: 1px solid var(--hair);
+    position: relative;
+    overflow: hidden;
+  }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(2.3rem, 6vw, 3.6rem);
+    line-height: 1.02;
+    letter-spacing: -0.02em;
+    margin: 0 0 16px;
+    text-wrap: balance;
+    font-weight: 800;
+  }
+  h1 .dim { color: var(--ink-soft); font-weight: 700; }
+  .lede { font-size: 1.18rem; color: var(--ink-soft); max-width: 60ch; margin: 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+  .chip {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--ink);
+    border: 1px solid var(--hair);
+    white-space: nowrap;
+  }
+  .chip b { color: var(--accent-ink); font-weight: 600; }
+
+  /* ---------- Nav ---------- */
+  nav.toc {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--hair);
+    margin-bottom: 40px;
+  }
+  nav.toc .wrap { display: flex; gap: 4px; overflow-x: auto; padding-top: 10px; padding-bottom: 10px; }
+  nav.toc a {
+    font-size: 13.5px; color: var(--ink-soft); text-decoration: none;
+    padding: 6px 12px; border-radius: 8px; white-space: nowrap; font-weight: 500;
+  }
+  nav.toc a:hover { color: var(--ink); background: var(--surface-2); }
+
+  section { padding: 22px 0 34px; scroll-margin-top: 60px; }
+  h2 {
+    font-size: 1.55rem; letter-spacing: -0.01em; margin: 0 0 6px; font-weight: 750;
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  h2 .num {
+    font-family: var(--font-mono); font-size: 0.82rem; color: var(--accent-ink);
+    border: 1px solid var(--hair); border-radius: 7px; padding: 2px 8px; font-weight: 600;
+  }
+  h3 { font-size: 1.06rem; margin: 26px 0 8px; font-weight: 700; }
+  p { margin: 0 0 14px; }
+  a.ref { color: var(--accent-ink); }
+  code {
+    font-family: var(--font-mono); font-size: 0.86em;
+    background: var(--surface-2); padding: 1.5px 6px; border-radius: 5px;
+  }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--hair);
+    border-radius: 14px; padding: 22px 24px;
+  }
+
+  /* ---------- Callout ---------- */
+  .callout {
+    display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start;
+    border-radius: 14px; padding: 18px 20px; margin: 18px 0;
+    border: 1px solid; font-size: 0.96rem;
+  }
+  .callout .ic { font-size: 1.3rem; line-height: 1.2; }
+  .callout.warn { background: color-mix(in srgb, var(--warn) 12%, var(--surface)); border-color: color-mix(in srgb, var(--warn) 45%, var(--hair)); }
+  .callout.danger { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: color-mix(in srgb, var(--danger) 45%, var(--hair)); }
+  .callout strong { color: var(--ink); }
+
+  /* ---------- Diagram ---------- */
+  .diagram-wrap { background: var(--surface); border: 1px solid var(--hair); border-radius: 16px; padding: 14px; overflow-x: auto; }
+  svg.schema { display: block; min-width: 720px; width: 100%; height: auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px 20px; margin-top: 16px; padding: 0 4px; }
+  .legend .item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); }
+  .legend .swatch { width: 22px; height: 4px; border-radius: 2px; }
+
+  /* ---------- Tables ---------- */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--hair); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 460px; }
+  caption { text-align: left; caption-side: top; font-weight: 700; padding: 12px 14px 4px; font-size: 0.98rem; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  thead th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-soft); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono, th.mono { font-family: var(--font-mono); font-size: 13px; }
+  td .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }
+  tbody tr:hover { background: var(--surface-2); }
+
+  /* ---------- Steps ---------- */
+  .phase { display: flex; gap: 18px; padding: 18px 0; border-top: 1px solid var(--hair); }
+  .phase:first-of-type { border-top: none; }
+  .phase .idx {
+    flex: none; width: 42px; height: 42px; border-radius: 12px;
+    background: var(--accent); color: #fff; font-weight: 800; font-size: 1.1rem;
+    display: grid; place-items: center; font-family: var(--font-mono);
+  }
+  .phase .body { flex: 1; }
+  .phase h3 { margin: 6px 0 8px; }
+  .phase ol { margin: 0; padding-left: 20px; }
+  .phase li { margin: 5px 0; }
+
+  /* ---------- Checklist ---------- */
+  ul.check { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+  ul.check li { display: flex; gap: 11px; align-items: start; padding: 11px 14px; background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; }
+  ul.check .box { flex: none; width: 18px; height: 18px; border-radius: 5px; border: 2px solid var(--ok); margin-top: 2px; position: relative; }
+  ul.check .box::after { content: "✓"; position: absolute; inset: -3px 0 0 2px; color: var(--ok); font-size: 13px; font-weight: 800; }
+
+  footer { border-top: 1px solid var(--hair); padding: 30px 0 60px; color: var(--ink-soft); font-size: 14px; }
+  footer a { color: var(--accent-ink); text-decoration: none; }
+  footer code { font-size: 12.5px; }
+
+  @media (max-width: 560px) {
+    header.hero { padding: 44px 0 30px; }
+    .phase { gap: 12px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    section, .phase { animation: rise .5s ease both; }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  }
+
+  /* styles partagés des schémas SVG détaillés */
+  .m-wire { fill: none; stroke-width: 3.4; stroke-linecap: round; stroke-linejoin: round; }
+  .m-blabel { font-family: var(--font-sans); font-weight: 700; }
+  .m-pin { font-family: var(--font-mono); font-size: 10px; }
+  .m-wl { font-family: var(--font-mono); font-size: 10.5px; paint-order: stroke; stroke: var(--surface); stroke-width: 3.5px; stroke-linejoin: round; }
+</style>
+
+<div class="page">
+  <header class="hero">
+    <div class="wrap">
+      <p class="eyebrow">Robot équilibriste · guide matériel</p>
+      <h1>Mochi <span class="dim">— câblage &amp; montage</span></h1>
+      <p class="lede">Schéma d'assemblage, brochage broche-à-broche et guide pas à pas de la moelle épinière temps réel : ESP32, 2 moteurs pas-à-pas, IMU, sonar, sur deux rails d'alimentation.</p>
+      <div class="chips">
+        <span class="chip"><b>MCU</b> ESP32-WROOM-32</span>
+        <span class="chip"><b>Moteurs</b> 2× NEMA 17 + A4988</span>
+        <span class="chip"><b>Équilibre</b> MPU6050 · PID 200 Hz</span>
+        <span class="chip"><b>Lien</b> Web Bluetooth</span>
+        <span class="chip"><b>Alim</b> 3S 12 V direct (DC 6,5–16 V)</span>
+      </div>
+    </div>
+  </header>
+
+  <nav class="toc">
+    <div class="wrap">
+      <a href="#archi">Architecture</a>
+      <a href="#power">Alimentation</a>
+      <a href="#schema">Schéma</a>
+      <a href="#pins">Brochage</a>
+      <a href="#ble">Protocole BLE</a>
+      <a href="#steps">Montage</a>
+      <a href="#safety">Sécurité</a>
+    </div>
+  </nav>
+
+  <div class="wrap">
+
+    <!-- ARCHITECTURE -->
+    <section id="archi">
+      <h2><span class="num">A</span> Architecture</h2>
+      <p class="prose">Trois couches, façon système nerveux. Le <strong>cerveau</strong> (Gemini + visage) vit dans l'app web sur le téléphone. L'<strong>ESP32</strong> est la moelle épinière temps réel : il tient seul l'équilibre et exécute des intentions de haut niveau reçues par Bluetooth. <em>Aucune IA à bord.</em></p>
+      <div class="diagram-wrap" style="margin-top:6px">
+        <svg class="schema" viewBox="0 0 900 200" role="img" aria-label="Flux : app web vers ESP32 par BLE, ESP32 vers moteurs et capteurs">
+          <defs>
+            <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--ink-soft)"/></marker>
+          </defs>
+          <g font-family="var(--font-sans)" font-size="14">
+            <rect x="20" y="66" width="180" height="68" rx="12" fill="var(--surface-2)" stroke="var(--blk-stroke)"/>
+            <text x="110" y="94" text-anchor="middle" font-weight="700" fill="var(--ink)">App web</text>
+            <text x="110" y="114" text-anchor="middle" fill="var(--ink-soft)" font-size="12">Gemini · visage</text>
+
+            <rect x="360" y="56" width="180" height="88" rx="12" fill="var(--accent)" opacity="0.14"/>
+            <rect x="360" y="56" width="180" height="88" rx="12" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+            <text x="450" y="88" text-anchor="middle" font-weight="800" fill="var(--ink)">ESP32</text>
+            <text x="450" y="107" text-anchor="middle" fill="var(--ink-soft)" font-size="12">équilibre 200 Hz</text>
+            <text x="450" y="124" text-anchor="middle" fill="var(--ink-soft)" font-size="12">cœur 1 / cœur 0</text>
+
+            <rect x="700" y="30" width="180" height="52" rx="12" fill="var(--surface-2)" stroke="var(--blk-stroke)"/>
+            <text x="790" y="61" text-anchor="middle" fill="var(--ink)">Moteurs (roues)</text>
+            <rect x="700" y="118" width="180" height="52" rx="12" fill="var(--surface-2)" stroke="var(--blk-stroke)"/>
+            <text x="790" y="149" text-anchor="middle" fill="var(--ink)">MPU6050 · HC-SR04</text>
+
+            <line x1="200" y1="100" x2="352" y2="100" stroke="var(--ink-soft)" stroke-width="1.6" marker-end="url(#ar)"/>
+            <text x="276" y="90" text-anchor="middle" font-family="var(--font-mono)" font-size="11" fill="var(--accent-ink)">BLE</text>
+            <line x1="540" y1="86" x2="692" y2="60" stroke="var(--ink-soft)" stroke-width="1.6" marker-end="url(#ar)"/>
+            <line x1="540" y1="114" x2="692" y2="140" stroke="var(--ink-soft)" stroke-width="1.6" marker-end="url(#ar)"/>
+            <line x1="700" y1="150" x2="548" y2="120" stroke="var(--ink-soft)" stroke-width="1.2" stroke-dasharray="4 4" marker-end="url(#ar)"/>
+            <text x="628" y="176" text-anchor="middle" font-size="11" fill="var(--ink-soft)">télémétrie ↩</text>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <!-- POWER -->
+    <section id="power">
+      <h2><span class="num">B</span> Deux rails d'alimentation</h2>
+      <p class="prose">Le 12 V du pack alimente le <b>bornier 12-36V du CNC Shield</b> (→ VMOT des A4988) <em>et</em> la <b>carte d'extension 30P</b> (l'ESP32 s'enfiche dessus) par son <b>jack DC 6,5–16 V</b> (régulateur intégré → 5 V / 3,3 V). Un pack 3S varie de ~9 à 12,6 V : pile dans la plage. <b>Plus besoin de buck LM2596 externe.</b> Sur la carte d'extension, chaque GPIO est exposé en trio <b>G·V·S</b> : <b>G</b> = GND, <b>V</b> = 5 V du régulateur, <b>S</b> = le signal (GPIO) — les capteurs se branchent en DuPont sur leur trio, sans breadboard.</p>
+      <div class="callout danger">
+        <span class="ic">⚡</span>
+        <div><strong>Le 12 V n'entre QUE par le jack « DC 6.5–16V » et le bornier « 12-36V » du shield</strong> — jamais sur <code>3V3</code>, un <code>V</code> ou un <code>S</code>. Vérifier au multimètre qu'une broche <code>V</code> sort ~5 V avant d'y brancher le HC-SR04 — et attention, le <b>V est du 5 V</b> : jamais pour la logique (les signaux restent en 3,3 V). Pas d'USB et 12 V en même temps (sauf protection confirmée par la doc carte). Et une seule masse commune partout : GND pack = GND extension = GND shield — sans référence commune, l'IMU et les drivers déraillent.</div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <caption>Distribution</caption>
+          <thead><tr><th>Rail</th><th>Source</th><th>Alimente</th></tr></thead>
+          <tbody>
+            <tr><td><span class="dot" style="background:var(--w-12v)"></span><b>12 V</b></td><td class="mono">Pack 3S → WAGO/XT60</td><td>bornier 12-36V du shield (VMOT), jack DC 6,5–16 V de la carte d'extension</td></tr>
+            <tr><td><span class="dot" style="background:var(--w-5v)"></span><b>5 V</b></td><td class="mono">carte d'extension (broches V)</td><td>VCC du HC-SR04 (~15 mA)</td></tr>
+            <tr><td><span class="dot" style="background:var(--w-33v)"></span><b>3,3 V</b></td><td class="mono">ESP32 (3V3)</td><td>MPU6050 VCC, logique des drivers (bornier 5V du shield)</td></tr>
+            <tr><td><span class="dot" style="background:var(--w-gnd)"></span><b>GND</b></td><td class="mono">bus commun</td><td>tout le monde</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SCHEMA -->
+    <section id="schema">
+      <h2><span class="num">C</span> Schéma de câblage</h2>
+      <p class="prose">Vue d'ensemble du <b>montage retenu</b> : ESP32 enfiché sur sa carte d'extension 30P, drivers A4988 enfichés dans le CNC Shield V3, liaison en DuPont entre les deux. Les broches exactes sont dans les tables du <a class="ref" href="#pins">brochage</a> ci-dessous.</p>
+      <div class="diagram-wrap">
+        <svg class="schema" viewBox="0 0 900 640" role="img" aria-label="Schéma de câblage de Mochi : pack 12 V vers le jack DC de la carte d'extension ESP32 et le bornier du CNC Shield V3, signaux DuPont vers le shield, MPU6050 et HC-SR04 sur les trios G/V/S">
+          <style>
+            .blk { fill: var(--blk-fill); stroke: var(--blk-stroke); stroke-width: 1.5; }
+            .title { font-family: var(--font-sans); font-weight: 700; font-size: 15px; fill: var(--ink); }
+            .sub { font-family: var(--font-mono); font-size: 11px; fill: var(--ink-soft); }
+            .wlbl { font-family: var(--font-mono); font-size: 11px; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+            .wire { fill: none; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+          </style>
+
+          <!-- GND rail -->
+          <path class="wire" style="stroke:var(--w-gnd)" d="M60 610 H840"/>
+          <text class="wlbl" style="fill:var(--w-gnd)" x="62" y="630">GND commun — relier toutes les masses</text>
+          <path class="wire" style="stroke:var(--w-gnd);stroke-width:2.4" d="M110 560 V610 M535 410 V610 M430 570 V610 M750 310 V610"/>
+
+          <!-- Battery -->
+          <rect class="blk" x="30" y="470" width="160" height="90" rx="12"/>
+          <text class="title" x="110" y="508" text-anchor="middle">Pack 3S 12 V</text>
+          <text class="sub" x="110" y="528" text-anchor="middle">BMS intégré</text>
+
+          <!-- WAGO -->
+          <rect class="blk" x="240" y="480" width="70" height="50" rx="8"/>
+          <text class="title" x="275" y="502" text-anchor="middle" font-size="12">WAGO</text>
+          <text class="sub" x="275" y="518" text-anchor="middle">12 V</text>
+
+          <!-- Carte d'extension + ESP32 -->
+          <rect x="300" y="230" width="240" height="180" rx="14" fill="var(--accent)" opacity="0.10"/>
+          <rect x="300" y="230" width="240" height="180" rx="14" fill="none" stroke="var(--accent)" stroke-width="1.8"/>
+          <text class="title" x="420" y="262" text-anchor="middle" font-size="16">ESP32 WROOM-32</text>
+          <text class="sub" x="420" y="282" text-anchor="middle">sur carte d'extension 30P</text>
+          <text class="sub" x="420" y="300" text-anchor="middle">jack DC 6.5–16V · trios G·V·S</text>
+          <text class="sub" x="420" y="396" text-anchor="middle" fill="var(--accent-ink)">cœur1 équilibre · cœur0 BLE</text>
+
+          <!-- MPU -->
+          <rect class="blk" x="60" y="60" width="180" height="80" rx="12"/>
+          <text class="title" x="150" y="94" text-anchor="middle">MPU6050</text>
+          <text class="sub" x="150" y="114" text-anchor="middle">IMU · I2C · 3,3 V</text>
+
+          <!-- CNC Shield V3 -->
+          <rect x="640" y="60" width="230" height="250" rx="12" fill="#2f5fa8" stroke="#1c3d72" stroke-width="2"/>
+          <text class="title" x="755" y="90" text-anchor="middle" fill="#dbe6f7">CNC Shield V3</text>
+          <rect x="660" y="106" width="72" height="66" rx="6" fill="#237a34" stroke="#14501f" stroke-width="2"/>
+          <text class="sub" x="696" y="143" text-anchor="middle" fill="#dff5e2">A4988 X</text>
+          <rect x="748" y="106" width="72" height="66" rx="6" fill="#237a34" stroke="#14501f" stroke-width="2"/>
+          <text class="sub" x="784" y="143" text-anchor="middle" fill="#dff5e2">A4988 Y</text>
+          <text class="sub" x="755" y="196" text-anchor="middle" fill="#bcd0ee">condo par socket · cavaliers 1/16</text>
+          <text class="sub" x="755" y="228" text-anchor="middle" fill="#dbe6f7">→ NEMA 17 : X = roue G · Y = roue D</text>
+          <rect x="642" y="268" width="58" height="34" rx="5" fill="#3a6ea5" stroke="#24497c"/>
+          <text class="sub" x="671" y="289" text-anchor="middle" fill="#eaf1fb">12-36V</text>
+
+          <!-- HC-SR04 -->
+          <rect class="blk" x="330" y="500" width="200" height="70" rx="12"/>
+          <text class="title" x="430" y="530" text-anchor="middle">HC-SR04</text>
+          <text class="sub" x="430" y="550" text-anchor="middle">obstacle · ultrasons</text>
+
+          <!-- 12 V -->
+          <path class="wire" style="stroke:var(--w-12v)" d="M190 505 H240"/>
+          <path class="wire" style="stroke:var(--w-12v)" d="M275 480 V330 H300"/>
+          <text class="wlbl" style="fill:var(--w-12v)" x="46" y="318">12 V → jack DC 6.5–16V</text>
+          <path class="wire" style="stroke:var(--w-12v)" d="M310 505 H320 V470 H600 V286 H642"/>
+          <text class="wlbl" style="fill:var(--w-12v)" x="392" y="462">12 V → bornier 12-36V</text>
+
+          <!-- signaux vers le shield (DuPont) -->
+          <path class="wire" style="stroke:var(--w-mot)" d="M540 260 H640"/>
+          <text class="wlbl" style="fill:var(--w-mot)" x="544" y="234">S : 26·27·25·33·14</text>
+          <text class="wlbl" style="fill:var(--w-mot)" x="544" y="250">→ X/Y STEP·DIR + EN</text>
+          <path class="wire" style="stroke:var(--w-33v)" d="M540 320 H640"/>
+          <text class="wlbl" style="fill:var(--w-33v)" x="544" y="340">3V3 → « 5V » (logique)</text>
+
+          <!-- MPU6050 (I2C) -->
+          <path class="wire" style="stroke:var(--w-33v)" d="M330 230 V100 H240"/>
+          <text class="wlbl" style="fill:var(--w-33v)" x="252" y="92">3V3</text>
+          <path class="wire" style="stroke:var(--w-i2c)" d="M370 230 V130 H240"/>
+          <text class="wlbl" style="fill:var(--w-i2c)" x="252" y="124">I2C (21·22)</text>
+
+          <!-- HC-SR04 (trio G/V/S) -->
+          <path class="wire" style="stroke:var(--w-5v)" d="M370 410 V500"/>
+          <text class="wlbl" style="fill:var(--w-5v)" x="286" y="462">V (5 V)</text>
+          <path class="wire" style="stroke:var(--w-son)" d="M470 410 V500"/>
+          <text class="wlbl" style="fill:var(--w-son)" x="478" y="462">S : TRIG · ECHO(÷)</text>
+        </svg>
+      </div>
+      <div class="legend">
+        <span class="item"><span class="swatch" style="background:var(--w-12v)"></span>12 V moteur</span>
+        <span class="item"><span class="swatch" style="background:var(--w-5v)"></span>5 V logique</span>
+        <span class="item"><span class="swatch" style="background:var(--w-33v)"></span>3,3 V</span>
+        <span class="item"><span class="swatch" style="background:var(--w-i2c)"></span>I2C (SDA/SCL)</span>
+        <span class="item"><span class="swatch" style="background:var(--w-mot)"></span>STEP / DIR / EN</span>
+        <span class="item"><span class="swatch" style="background:var(--w-son)"></span>sonar</span>
+        <span class="item"><span class="swatch" style="background:var(--w-gnd)"></span>GND commun</span>
+      </div>
+
+      <h3>Gros plan — MPU6050 (I2C)</h3>
+      <p class="prose">Le capteur d'angle en bus I2C : 4 fils. <code>AD0</code> à la masse fixe l'adresse à <code>0x68</code>. À monter bas et rigide, aligné sur l'axe des roues.</p>
+      <div class="diagram-wrap">
+        <svg class="schema" viewBox="0 0 720 300" role="img" aria-label="Branchement du MPU6050 (GY-521) en I2C : VCC, GND, SCL, SDA vers l'ESP32">
+          <path class="m-wire" style="stroke:var(--w-33v)" d="M180 110 C 280 110, 300 90, 388 90"/>
+          <path class="m-wire" style="stroke:var(--w-gnd)" d="M180 140 C 280 140, 300 110, 388 110"/>
+          <path class="m-wire" style="stroke:var(--w-i2c)" d="M180 175 C 290 175, 300 150, 388 150"/>
+          <path class="m-wire" style="stroke:var(--w-i2c)" d="M180 205 C 300 205, 300 130, 388 130"/>
+
+          <rect x="30" y="70" width="150" height="165" rx="10" fill="#125b61" stroke="#0c3f43" stroke-width="2"/>
+          <rect x="66" y="118" width="60" height="44" rx="4" fill="#0c3438"/>
+          <text x="96" y="145" class="m-blabel" font-size="11" fill="#7fd6db" text-anchor="middle">ESP32</text>
+          <g fill="#e9b64a" stroke="#8a6b12"><circle cx="180" cy="110" r="4.5"/><circle cx="180" cy="140" r="4.5"/><circle cx="180" cy="175" r="4.5"/><circle cx="180" cy="205" r="4.5"/></g>
+          <g class="m-pin" fill="#dfeff0" text-anchor="end"><text x="172" y="113">3V3</text><text x="172" y="143">GND</text><text x="172" y="178">21</text><text x="172" y="208">22</text></g>
+
+          <rect x="380" y="70" width="165" height="175" rx="9" fill="#26306e" stroke="#161d4a" stroke-width="2"/>
+          <rect x="448" y="120" width="52" height="52" rx="3" fill="#0e0e12"/>
+          <text x="474" y="150" class="m-pin" fill="#8a90c8" text-anchor="middle">MPU</text>
+          <g fill="#d9d0a0" stroke="#8a7f4b"><circle cx="388" cy="90" r="4"/><circle cx="388" cy="110" r="4"/><circle cx="388" cy="130" r="4"/><circle cx="388" cy="150" r="4"/><circle cx="388" cy="170" r="4"/><circle cx="388" cy="190" r="4"/><circle cx="388" cy="210" r="4"/><circle cx="388" cy="230" r="4"/></g>
+          <g class="m-pin" fill="#e6e8f6" text-anchor="start"><text x="397" y="93">VCC</text><text x="397" y="113">GND</text><text x="397" y="133">SCL</text><text x="397" y="153">SDA</text><text x="397" y="173">XDA</text><text x="397" y="193">XCL</text><text x="397" y="213">AD0</text><text x="397" y="233">INT</text></g>
+          <text x="474" y="188" class="m-blabel" font-size="11" fill="#c9cef0" text-anchor="middle">MPU6050</text>
+          <text x="474" y="204" class="m-pin" fill="#9298cc" text-anchor="middle">GY-521</text>
+
+          <path class="m-wire" style="stroke:var(--w-gnd);stroke-width:2.2" d="M388 210 C 360 210, 355 250, 388 250"/>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="397" y="266">AD0 → GND · adresse 0x68</text>
+          <text class="m-wl" style="fill:var(--w-33v)" x="250" y="84">3V3</text>
+          <text class="m-wl" style="fill:var(--w-i2c)" x="252" y="168">SDA</text>
+          <text class="m-wl" style="fill:var(--w-i2c)" x="250" y="222">SCL</text>
+        </svg>
+      </div>
+
+      <h3>Gros plan — HC-SR04 (diviseur sur ECHO)</h3>
+      <p class="prose">L'ECHO sort en 5 V : un diviseur <code>1 kΩ / 2 kΩ</code> le ramène à ~3,3 V pour <code>GPIO35</code> (entrée seule). <b>Le diviseur reste obligatoire</b> quelle que soit l'alimentation — c'est une question de signal. VCC sur une broche <code>V</code> (5 V) de la carte d'extension, TRIG direct sur <code>GPIO13</code>.</p>
+      <div class="diagram-wrap">
+        <svg class="schema" viewBox="0 0 720 310" role="img" aria-label="Branchement du HC-SR04 avec diviseur de tension 1k/2k sur ECHO vers GPIO35">
+          <path class="m-wire" style="stroke:var(--w-gnd);stroke-width:2.6" d="M180 245 H 360 M180 200 V245 M360 180 V245 M270 218 V245"/>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="184" y="262">GND commun</text>
+
+          <path class="m-wire" style="stroke:var(--w-5v)" d="M295 44 C 320 60, 340 78, 360 90"/>
+          <path class="m-wire" style="stroke:var(--w-son)" d="M180 95 C 280 95, 300 120, 360 120"/>
+          <path class="m-wire" style="stroke:var(--w-son)" d="M180 150 H 258"/>
+          <path class="m-wire" style="stroke:var(--w-son)" d="M282 150 H 300 M340 150 H 360"/>
+
+          <rect x="30" y="55" width="150" height="165" rx="10" fill="#125b61" stroke="#0c3f43" stroke-width="2"/>
+          <rect x="64" y="108" width="60" height="42" rx="4" fill="#0c3438"/>
+          <text x="94" y="134" class="m-blabel" font-size="11" fill="#7fd6db" text-anchor="middle">ESP32</text>
+          <g fill="#e9b64a" stroke="#8a6b12"><circle cx="180" cy="95" r="4.5"/><circle cx="180" cy="150" r="4.5"/><circle cx="180" cy="200" r="4.5"/></g>
+          <g class="m-pin" fill="#dfeff0" text-anchor="end"><text x="172" y="98">13</text><text x="172" y="153">35</text><text x="172" y="203">GND</text></g>
+
+          <rect x="228" y="20" width="80" height="24" rx="6" fill="var(--w-5v)"/><text x="268" y="37" class="m-blabel" font-size="10.5" fill="#fff" text-anchor="middle">V (5 V)</text>
+
+          <rect x="300" y="142" width="40" height="16" rx="3" fill="var(--surface-2)" stroke="var(--ink-soft)"/>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="320" y="136" text-anchor="middle">1 kΩ</text>
+          <rect x="262" y="176" width="16" height="42" rx="3" fill="var(--surface-2)" stroke="var(--ink-soft)"/>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="300" y="200">2 kΩ</text>
+          <circle cx="270" cy="150" r="3.5" fill="var(--w-son)"/>
+          <path class="m-wire" style="stroke:var(--w-gnd);stroke-width:2.6" d="M270 158 V176"/>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="258" y="128" text-anchor="end">÷ 5V→3,3V</text>
+
+          <rect x="360" y="55" width="220" height="150" rx="10" fill="#2f6fb0" stroke="#1d4a7a" stroke-width="2"/>
+          <circle cx="488" cy="120" r="30" fill="#b7bcc4" stroke="#7a8088" stroke-width="2"/><circle cx="488" cy="120" r="19" fill="#3a3d42"/><circle cx="488" cy="120" r="7" fill="#5a5f66"/>
+          <circle cx="550" cy="120" r="30" fill="#b7bcc4" stroke="#7a8088" stroke-width="2"/><circle cx="550" cy="120" r="19" fill="#3a3d42"/><circle cx="550" cy="120" r="7" fill="#5a5f66"/>
+          <rect x="418" y="158" width="24" height="14" rx="2" fill="#c0a24b"/>
+          <g fill="#d9d0a0" stroke="#8a7f4b"><circle cx="360" cy="90" r="4"/><circle cx="360" cy="120" r="4"/><circle cx="360" cy="150" r="4"/><circle cx="360" cy="180" r="4"/></g>
+          <g class="m-pin" fill="#e6eef8" text-anchor="start"><text x="369" y="93">VCC</text><text x="369" y="123">TRIG</text><text x="369" y="153">ECHO</text><text x="369" y="183">GND</text></g>
+          <text x="470" y="196" class="m-blabel" font-size="11" fill="#dbe8f6" text-anchor="middle">HC-SR04</text>
+
+          <text class="m-wl" style="fill:var(--w-5v)" x="322" y="72">5 V</text>
+          <text class="m-wl" style="fill:var(--w-son)" x="230" y="110">TRIG</text>
+          <text class="m-wl" style="fill:var(--w-son)" x="212" y="144">ECHO(÷)</text>
+        </svg>
+      </div>
+
+      <h3>Gros plan — alimentation (2 rails)</h3>
+      <p class="prose">Le pack 3S alimente en <b>12 V</b> les A4988 (bornier du shield, via XT60/WAGO) et la <b>carte d'extension 30P</b> par son <b>jack DC 6,5–16 V</b> (régulateur intégré). Les broches <b>V</b> de la carte d'extension alimentent le HC-SR04. Points critiques : le 12 V n'entre <b>que</b> par ces deux entrées dédiées, et <b>une seule masse commune</b>.</p>
+      <div class="diagram-wrap">
+        <svg class="schema" viewBox="0 0 760 340" role="img" aria-label="Alimentation : pack 3S 12 V vers XT60, rail 12 V pour les A4988 et l'entrée DC 6.5–16V de la carte ESP32">
+          <path class="m-wire" style="stroke:var(--w-12v)" d="M170 96 H 250"/>
+          <path class="m-wire" style="stroke:var(--w-gnd)" d="M170 128 H 250"/>
+          <path class="m-wire" style="stroke:var(--w-12v)" d="M300 96 H 360 V70 H 470"/>
+          <path class="m-wire" style="stroke:var(--w-12v)" d="M360 96 V 150 H 470"/>
+          <path class="m-wire" style="stroke:var(--w-12v)" d="M360 150 V 250 H 600"/>
+          <path class="m-wire" style="stroke:var(--w-gnd);stroke-width:3" d="M300 128 H 400 V 300 M400 300 H 690 M470 300 V 92 M470 300 V 172 M620 278 V 300"/>
+
+          <rect x="30" y="72" width="140" height="86" rx="9" fill="#1c1c22" stroke="#000"/>
+          <g fill="#2a2a33" stroke="#3a3a44"><rect x="42" y="84" width="26" height="62" rx="5"/><rect x="72" y="84" width="26" height="62" rx="5"/><rect x="102" y="84" width="26" height="62" rx="5"/></g>
+          <text x="100" y="120" class="m-blabel" font-size="11" fill="#c7c7d0" text-anchor="middle">3S 18650</text>
+          <text x="100" y="66" class="m-pin" fill="var(--ink-soft)" text-anchor="middle">12 V · BMS intégré</text>
+          <circle cx="170" cy="96" r="3.5" fill="var(--w-12v)"/><circle cx="170" cy="128" r="3.5" fill="var(--w-gnd)"/>
+
+          <rect x="250" y="82" width="50" height="60" rx="6" fill="#f2c200" stroke="#b89400"/>
+          <path d="M250 82 l0 60 l14 0 l0 -12 l-8 0 l0 -36 l8 0 l0 -12 z" fill="#d9ad00"/>
+          <circle cx="278" cy="96" r="5" fill="#7a1414"/><circle cx="278" cy="128" r="5" fill="#222"/>
+          <text x="275" y="158" class="m-pin" fill="var(--ink-soft)" text-anchor="middle">XT60</text>
+
+          <circle cx="360" cy="96" r="4" fill="var(--w-12v)"/>
+          <text class="m-wl" style="fill:var(--w-12v)" x="366" y="60">rail 12 V</text>
+
+          <rect x="470" y="46" width="150" height="60" rx="8" fill="#237a34" stroke="#14501f" stroke-width="2"/>
+          <text x="545" y="72" class="m-blabel" font-size="11" fill="#dff5e2" text-anchor="middle">CNC Shield V3</text>
+          <text x="545" y="90" class="m-pin" fill="#bfe6c8" text-anchor="middle">bornier 12-36V</text>
+          <circle cx="470" cy="70" r="4" fill="#d9902b"/>
+          <g stroke="var(--ink-soft)" stroke-width="2" fill="none"><path d="M446 150 h14 M460 142 v16 M466 142 v16 M466 176 h-24 v-26"/></g>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="452" y="192">100 µF (intégré)</text>
+
+          <rect x="600" y="222" width="150" height="56" rx="8" fill="#125b61" stroke="#0c3f43" stroke-width="2"/>
+          <text x="675" y="246" class="m-blabel" font-size="11" fill="#bfeef2" text-anchor="middle">ESP32 + HC-SR04</text>
+          <text x="675" y="264" class="m-pin" fill="#9fd8dc" text-anchor="middle">entrée DC 6.5–16V</text>
+          <circle cx="600" cy="250" r="4" fill="var(--w-12v)"/>
+
+          <text class="m-wl" style="fill:var(--w-12v)" x="440" y="242">12 V direct</text>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="405" y="316">GND commun — une seule masse</text>
+        </svg>
+      </div>
+
+      <h3>Distribution sans soudure (WAGO + DuPont)</h3>
+      <div class="callout warn">
+        <span class="ic">🔌</span>
+        <div><strong>Le pack sort avec son connecteur 2P d'origine — pas un XT60.</strong> Pour éviter de sertir/souder : distribue la puissance avec des <b>WAGO 221</b> (bornes à levier) et les signaux avec des <b>fils DuPont</b> femelle-femelle. Avec le CNC Shield, il ne reste <b>quasiment rien à souder</b> : les A4988 s'enfichent, les condensateurs sont intégrés. Attache les fils au châssis (les vibrations desserrent les liaisons volantes).</div>
+      </div>
+      <div class="diagram-wrap">
+        <svg class="schema" viewBox="0 0 820 450" role="img" aria-label="Montage sans soudure : WAGO à leviers pour la puissance 12 V, fils DuPont pour les signaux et le 5 V du HC-SR04">
+          <path class="m-wire" style="stroke:var(--w-12v);stroke-width:4" d="M162 70 H232"/>
+          <path class="m-wire" style="stroke:var(--w-12v);stroke-width:4" d="M324 66 H560"/>
+          <path class="m-wire" style="stroke:var(--w-12v);stroke-width:4" d="M278 98 V180 H560"/>
+          <path class="m-wire" style="stroke:var(--w-5v);stroke-width:3" d="M590 226 V300"/>
+          <path class="m-wire" style="stroke:var(--w-gnd);stroke-width:3.2" d="M120 400 H700"/>
+          <path class="m-wire" style="stroke:var(--w-gnd);stroke-width:2.6" d="M162 100 V400 M610 250 V400"/>
+
+          <path class="m-wire" style="stroke:var(--w-mot);stroke-width:2.3;stroke-dasharray:1 6" d="M650 150 V132"/>
+          <path class="m-wire" style="stroke:var(--w-i2c);stroke-width:2.3;stroke-dasharray:1 6" d="M620 226 V300"/>
+          <path class="m-wire" style="stroke:var(--w-son);stroke-width:2.3;stroke-dasharray:1 6" d="M676 226 V300"/>
+
+          <rect x="24" y="48" width="138" height="74" rx="9" fill="#1c1c22" stroke="#000"/>
+          <g fill="#2a2a33" stroke="#3a3a44"><rect x="36" y="60" width="24" height="50" rx="4"/><rect x="64" y="60" width="24" height="50" rx="4"/><rect x="92" y="60" width="24" height="50" rx="4"/></g>
+          <text x="93" y="90" class="m-blabel" font-size="10.5" fill="#c7c7d0" text-anchor="middle">Pack 3S</text>
+          <text x="93" y="140" class="m-pin" fill="var(--ink-soft)" text-anchor="middle">sortie 2P native</text>
+          <circle cx="162" cy="70" r="3.5" fill="var(--w-12v)"/><circle cx="162" cy="100" r="3.5" fill="var(--w-gnd)"/>
+
+          <rect x="232" y="46" width="92" height="52" rx="7" fill="var(--surface-2)" stroke="var(--hair)"/>
+          <rect x="240" y="40" width="20" height="12" rx="2" fill="#e8892b"/><rect x="266" y="40" width="20" height="12" rx="2" fill="#e8892b"/><rect x="292" y="40" width="20" height="12" rx="2" fill="#e8892b"/>
+          <text x="278" y="78" class="m-blabel" font-size="10" fill="var(--ink)" text-anchor="middle">WAGO</text>
+          <text x="278" y="116" class="m-wl" fill="var(--w-12v)" text-anchor="middle">rail 12 V</text>
+
+          <text x="420" y="170" class="m-wl" fill="var(--w-12v)" text-anchor="middle">12 V → entrée DC 6.5–16V</text>
+
+          <rect x="560" y="44" width="180" height="88" rx="8" fill="#237a34" stroke="#14501f" stroke-width="2"/>
+          <text x="650" y="82" class="m-blabel" font-size="11" fill="#dff5e2" text-anchor="middle">CNC Shield V3</text>
+          <text x="650" y="100" class="m-pin" fill="#bfe6c8" text-anchor="middle">12-36V · condos intégrés</text>
+          <circle cx="560" cy="66" r="4" fill="var(--w-12v)"/>
+
+          <rect x="560" y="150" width="180" height="76" rx="8" fill="#125b61" stroke="#0c3f43" stroke-width="2"/>
+          <text x="650" y="184" class="m-blabel" font-size="11" fill="#bfeef2" text-anchor="middle">ESP32</text>
+          <text x="650" y="202" class="m-pin" fill="#9fd8dc" text-anchor="middle">entrée DC 6.5–16V</text>
+          <circle cx="560" cy="180" r="4" fill="var(--w-12v)"/>
+
+          <rect x="560" y="300" width="180" height="70" rx="8" fill="#2f6fb0" stroke="#1d4a7a" stroke-width="2"/>
+          <text x="650" y="332" class="m-blabel" font-size="10.5" fill="#dbe8f6" text-anchor="middle">MPU6050 + HC-SR04</text>
+          <circle cx="590" cy="300" r="4" fill="var(--w-5v)"/>
+          <text class="m-wl" style="fill:var(--w-5v)" x="540" y="270" text-anchor="middle">5 V carte</text>
+
+          <rect x="330" y="392" width="40" height="16" rx="4" fill="var(--surface-2)" stroke="var(--hair)"/>
+          <rect x="336" y="388" width="8" height="8" rx="1" fill="#e8892b"/><rect x="348" y="388" width="8" height="8" rx="1" fill="#e8892b"/><rect x="360" y="388" width="8" height="8" rx="1" fill="#e8892b"/>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="124" y="432">GND commun — WAGO 5 trous</text>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="628" y="286" text-anchor="middle">signaux · DuPont F/F</text>
+
+          <text class="m-wl" style="fill:var(--w-mot)" x="656" y="146">STEP·DIR·EN</text>
+          <text class="m-wl" style="fill:var(--w-i2c)" x="576" y="270">I2C</text>
+          <text class="m-wl" style="fill:var(--w-son)" x="682" y="270">TRIG/ECHO</text>
+        </svg>
+      </div>
+      <div class="legend">
+        <span class="item"><span class="swatch" style="background:var(--w-12v)"></span>Puissance → WAGO 221 (0 soudure)</span>
+        <span class="item"><span class="swatch" style="background:var(--w-mot);height:2px"></span>Signaux → DuPont F/F (0 soudure)</span>
+        <span class="item">🔧 Soudure : quasi aucune (drivers enfichés, condos intégrés au shield)</span>
+      </div>
+
+      <h3>Gros plan — CNC Shield V3 (montage retenu)</h3>
+      <div class="callout warn">
+        <span class="ic">✅</span>
+        <div><strong>Montage retenu : le CNC Shield V3 remplace toute la soudure des A4988.</strong> Les drivers s'enfichent dans les sockets (condensateur intégré par socket), le 12 V arrive sur le <b>bornier à vis</b>, les moteurs sur les sorties, les micro-pas se règlent par cavaliers (1/16 = les 3). On le pilote depuis l'<b>ESP32 en DuPont</b> sur le <b>bornier de signaux sérigraphié</b> (<code>EN, X.STEP/DR, Y.STEP/DR…, 5V/GND</code>) — on ne branche PAS l'ESP32 dessus. <b>Point de vigilance : alimenter la logique des drivers en 3,3 V</b> (broche <code>5V</code> du bornier) et non en 5 V, sinon les signaux 3,3 V de l'ESP32 sont marginaux.</div>
+      </div>
+      <div class="diagram-wrap">
+        <svg class="schema" viewBox="0 0 780 380" role="img" aria-label="ESP32 relié en DuPont à un CNC Shield V3 portant deux A4988, alimenté en 12 V, vers deux moteurs">
+          <path class="m-wire" style="stroke:var(--w-mot);stroke-width:2.3;stroke-dasharray:1 5.5" d="M174 104 H300"/>
+          <path class="m-wire" style="stroke:var(--w-mot);stroke-width:2.3;stroke-dasharray:1 5.5" d="M174 128 H300"/>
+          <path class="m-wire" style="stroke:var(--w-mot);stroke-width:2.3;stroke-dasharray:1 5.5" d="M174 152 H300"/>
+          <path class="m-wire" style="stroke:var(--w-mot);stroke-width:2.3;stroke-dasharray:1 5.5" d="M174 176 H300"/>
+          <path class="m-wire" style="stroke:var(--w-mot);stroke-width:2.3;stroke-dasharray:1 5.5" d="M174 200 H300"/>
+          <path class="m-wire" style="stroke:var(--w-33v);stroke-width:2.3;stroke-dasharray:1 5.5" d="M174 224 H300"/>
+          <path class="m-wire" style="stroke:var(--w-gnd);stroke-width:2.3;stroke-dasharray:1 5.5" d="M174 248 H300"/>
+          <path class="m-wire" style="stroke:var(--w-12v);stroke-width:3.6" d="M250 40 V56 H320"/>
+          <path class="m-wire" style="stroke:var(--w-gnd);stroke-width:2.6" d="M494 130 H630 M494 145 H620 V300 H630"/>
+          <path class="m-wire" style="stroke:#3aa63f;stroke-width:2.6" d="M494 160 H612 V150 H630"/>
+          <path class="m-wire" style="stroke:var(--w-12v);stroke-width:2.6" d="M494 280 H630"/>
+          <path class="m-wire" style="stroke:#2f7de0;stroke-width:2.6" d="M494 296 H630"/>
+
+          <rect x="24" y="80" width="150" height="185" rx="10" fill="#125b61" stroke="#0c3f43" stroke-width="2"/>
+          <rect x="58" y="150" width="60" height="42" rx="4" fill="#0c3438"/>
+          <text x="88" y="176" class="m-blabel" font-size="11" fill="#7fd6db" text-anchor="middle">ESP32</text>
+          <g fill="#e9b64a" stroke="#8a6b12"><circle cx="174" cy="104" r="4"/><circle cx="174" cy="128" r="4"/><circle cx="174" cy="152" r="4"/><circle cx="174" cy="176" r="4"/><circle cx="174" cy="200" r="4"/><circle cx="174" cy="224" r="4"/><circle cx="174" cy="248" r="4"/></g>
+          <g class="m-pin" fill="#dfeff0" text-anchor="end"><text x="166" y="107">26</text><text x="166" y="131">27</text><text x="166" y="155">25</text><text x="166" y="179">33</text><text x="166" y="203">14</text><text x="166" y="227">3V3</text><text x="166" y="251">GND</text></g>
+
+          <rect x="300" y="70" width="250" height="292" rx="10" fill="#2f5fa8" stroke="#1c3d72" stroke-width="2"/>
+          <text x="425" y="352" class="m-blabel" font-size="11" fill="#dbe6f7" text-anchor="middle">CNC Shield V3</text>
+          <rect x="312" y="52" width="86" height="24" rx="4" fill="#1f7a4d" stroke="#124b30"/>
+          <circle cx="330" cy="64" r="5" fill="#d7d9db"/><circle cx="352" cy="64" r="5" fill="#d7d9db"/>
+          <text x="378" y="68" class="m-pin" fill="#eafff4">12 V</text>
+          <g fill="#d9d0a0" stroke="#8a7f4b"><circle cx="300" cy="104" r="4"/><circle cx="300" cy="128" r="4"/><circle cx="300" cy="152" r="4"/><circle cx="300" cy="176" r="4"/><circle cx="300" cy="200" r="4"/><circle cx="300" cy="224" r="4"/><circle cx="300" cy="248" r="4"/></g>
+          <g class="m-pin" fill="#eaf1fb" text-anchor="start"><text x="308" y="107">X.STEP</text><text x="308" y="131">X.DIR</text><text x="308" y="155">Y.STEP</text><text x="308" y="179">Y.DIR</text><text x="308" y="203">EN</text><text x="308" y="227">5V→3V3</text><text x="308" y="251">GND</text></g>
+          <rect x="398" y="92" width="96" height="104" rx="6" fill="#237a34" stroke="#14501f" stroke-width="2"/>
+          <rect x="430" y="120" width="32" height="32" rx="3" fill="#111"/>
+          <rect x="404" y="168" width="16" height="10" rx="2" fill="#3a6ea5"/><text x="446" y="177" class="m-pin" fill="#bfe6c8">condo</text>
+          <text x="446" y="108" class="m-blabel" font-size="10" fill="#dff5e2" text-anchor="middle">A4988 X</text>
+          <rect x="398" y="224" width="96" height="104" rx="6" fill="#237a34" stroke="#14501f" stroke-width="2"/>
+          <rect x="430" y="252" width="32" height="32" rx="3" fill="#111"/>
+          <rect x="404" y="300" width="16" height="10" rx="2" fill="#3a6ea5"/><text x="446" y="309" class="m-pin" fill="#bfe6c8">condo</text>
+          <text x="446" y="240" class="m-blabel" font-size="10" fill="#dff5e2" text-anchor="middle">A4988 Y</text>
+
+          <rect x="628" y="100" width="120" height="86" rx="9" fill="#b9bcc0" stroke="#8f9297" stroke-width="2"/>
+          <rect x="644" y="116" width="88" height="54" rx="5" fill="#3a3d42"/><circle cx="688" cy="143" r="16" fill="#c4c7cb" stroke="#8f9297"/>
+          <text x="688" y="200" class="m-pin" fill="#6d7075" text-anchor="middle">NEMA 17 · G</text>
+          <rect x="628" y="252" width="120" height="86" rx="9" fill="#b9bcc0" stroke="#8f9297" stroke-width="2"/>
+          <rect x="644" y="268" width="88" height="54" rx="5" fill="#3a3d42"/><circle cx="688" cy="295" r="16" fill="#c4c7cb" stroke="#8f9297"/>
+          <text x="688" y="352" class="m-pin" fill="#6d7075" text-anchor="middle">NEMA 17 · D</text>
+
+          <rect x="238" y="24" width="70" height="22" rx="6" fill="var(--w-12v)"/><text x="273" y="39" class="m-blabel" font-size="10" fill="#fff" text-anchor="middle">12 V pack</text>
+          <text class="m-wl" style="fill:var(--ink-soft)" x="180" y="292">signaux · DuPont F/F (STEP·DIR·EN)</text>
+          <text class="m-wl" style="fill:var(--w-5v)" x="308" y="268">⚠ logique en 3,3 V, pas 5 V</text>
+        </svg>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <caption>Câblage ESP32 → CNC Shield (aucun changement de firmware)</caption>
+          <thead><tr><th class="mono">ESP32 (config.h)</th><th class="mono">Broche shield</th><th>Rôle</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">GPIO26</td><td class="mono">X.STEP</td><td>pas roue gauche</td></tr>
+            <tr><td class="mono">GPIO27</td><td class="mono">X.DIR</td><td>sens roue gauche</td></tr>
+            <tr><td class="mono">GPIO25</td><td class="mono">Y.STEP</td><td>pas roue droite</td></tr>
+            <tr><td class="mono">GPIO33</td><td class="mono">Y.DIR</td><td>sens roue droite</td></tr>
+            <tr><td class="mono">GPIO14</td><td class="mono">EN</td><td>enable commun (actif bas)</td></tr>
+            <tr><td class="mono">3V3</td><td class="mono">5V (bornier 5V/GND)</td><td><b>logique drivers en 3,3 V</b></td></tr>
+            <tr><td class="mono">GND</td><td class="mono">GND</td><td>masse commune</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- PINS -->
+    <section id="pins">
+      <h2><span class="num">D</span> Brochage broche-à-broche</h2>
+      <p class="prose">Ces broches correspondent à <code>firmware/include/config.h</code>. Sur la carte d'extension, chaque GPIO = un trio <b>G·V·S</b> (<b>G</b>ND · <b>V</b> = 5 V · <b>S</b>ignal) : on branche sur le <b>S</b> du numéro voulu, le G et le V d'à côté servent d'alim au capteur. Rappel ESP32 : <code>GPIO34–39</code> sont en entrée seule, <code>GPIO6–11</code> réservées au flash.</p>
+
+      <h3>ESP32 → modules</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th class="mono">Broche</th><th>Va vers</th><th>Type</th><th>Note</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">GPIO21</td><td>MPU6050 SDA</td><td><span class="dot" style="background:var(--w-i2c)"></span>I2C</td><td>—</td></tr>
+            <tr><td class="mono">GPIO22</td><td>MPU6050 SCL</td><td><span class="dot" style="background:var(--w-i2c)"></span>I2C</td><td>—</td></tr>
+            <tr><td class="mono">3V3</td><td>MPU VCC + bornier 5V du shield</td><td><span class="dot" style="background:var(--w-33v)"></span>alim</td><td>logique 3,3 V</td></tr>
+            <tr><td class="mono">GPIO26</td><td>shield X.STEP</td><td><span class="dot" style="background:var(--w-mot)"></span>signal</td><td>A4988 roue gauche</td></tr>
+            <tr><td class="mono">GPIO27</td><td>shield X.DIR</td><td><span class="dot" style="background:var(--w-mot)"></span>signal</td><td>—</td></tr>
+            <tr><td class="mono">GPIO25</td><td>shield Y.STEP</td><td><span class="dot" style="background:var(--w-mot)"></span>signal</td><td>A4988 roue droite</td></tr>
+            <tr><td class="mono">GPIO33</td><td>shield Y.DIR</td><td><span class="dot" style="background:var(--w-mot)"></span>signal</td><td>—</td></tr>
+            <tr><td class="mono">GPIO14</td><td>shield EN (2 A4988)</td><td><span class="dot" style="background:var(--w-mot)"></span>signal</td><td>actif à l'état BAS</td></tr>
+            <tr><td class="mono">GPIO13</td><td>HC-SR04 TRIG</td><td><span class="dot" style="background:var(--w-son)"></span>signal</td><td>sortie 3,3 V OK</td></tr>
+            <tr><td class="mono">GPIO35</td><td>HC-SR04 ECHO</td><td><span class="dot" style="background:var(--w-son)"></span>signal</td><td><b>via diviseur</b>, entrée seule</td></tr>
+            <tr><td class="mono">GPIO2</td><td>LED d'état</td><td><span class="dot" style="background:var(--accent)"></span>UI</td><td>fixe = connecté</td></tr>
+            <tr><td class="mono">jack DC 6.5–16V</td><td>+12 V (pack)</td><td><span class="dot" style="background:var(--w-12v)"></span>alim</td><td>sur la carte d'extension 30P (régulateur intégré)</td></tr>
+            <tr><td class="mono">V (trio G/V/S)</td><td>HC-SR04 VCC</td><td><span class="dot" style="background:var(--w-5v)"></span>alim</td><td>5 V du régulateur de la carte d'extension</td></tr>
+            <tr><td class="mono">GND</td><td>bus commun</td><td><span class="dot" style="background:var(--w-gnd)"></span>masse</td><td>relier tous les GND</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>A4988 sur le shield (identique ×2)</h3>
+      <p class="prose">Tout le câblage fin du driver (VMOT, VDD, MS1-3, RESET/SLEEP, EN) est <b>routé par le shield</b> — il ne reste que des réglages mécaniques :</p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Élément</th><th>Réglage</th><th>Note</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">Socket X / Y</td><td>enficher le driver</td><td>X = roue gauche, Y = roue droite ; sens : repérer le <b>potentiomètre</b></td></tr>
+            <tr><td class="mono">Cavaliers MS1·MS2·MS3</td><td>les 3 posés sous chaque socket</td><td>→ micro-pas 1/16</td></tr>
+            <tr><td class="mono">Condo 100 µF</td><td>intégré au socket</td><td>rien à souder</td></tr>
+            <tr><td class="mono">RESET / SLEEP, EN</td><td>déjà routés par le shield</td><td>—</td></tr>
+            <tr><td class="mono">Vref</td><td>~1,0–1,2 A (17HS4401)</td><td>régler au multimètre <b>avant</b> de tourner</td></tr>
+            <tr><td class="mono">Moteur</td><td>header 4 broches à côté du socket</td><td><i>pas</i> les X+ X- Y+ Y- (fins de course)</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <span class="ic">🔧</span>
+        <div><strong>Diviseur ECHO (5 V → 3,3 V).</strong> L'ECHO sort en 5 V, <code>GPIO35</code> ne tolère que 3,3 V : <code>ECHO —[1 kΩ]—•— GPIO35</code>, et <code>•—[2 kΩ]— GND</code>. (5 V × 2/3 ≈ 3,33 V.)</div>
+      </div>
+    </section>
+
+    <!-- BLE -->
+    <section id="ble">
+      <h2><span class="num">E</span> Protocole BLE</h2>
+      <p class="prose">Un service GATT, deux caractéristiques. La <b>commande</b> (app → robot, écriture sans réponse) transporte un message compact <code>1 octet opcode + params</code> ; la <b>télémétrie</b> (robot → app, notifications) remonte l'état à 10 Hz. UUIDs partagés entre <code>protocol.h</code> et <code>bleProfile.ts</code>.</p>
+      <div class="table-scroll">
+        <table>
+          <caption>Opcodes (octet 0 de la commande)</caption>
+          <thead><tr><th class="mono">Op</th><th>Intention</th><th class="mono">Params</th><th>Effet</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">0x00</td><td>STOP</td><td class="mono">—</td><td>stoppe le déplacement, <b>reste debout</b></td></tr>
+            <tr><td class="mono">0x01</td><td>FORWARD</td><td class="mono">int16 cm</td><td>avance en croisière</td></tr>
+            <tr><td class="mono">0x02</td><td>BACKWARD</td><td class="mono">int16 cm</td><td>recule</td></tr>
+            <tr><td class="mono">0x03</td><td>TURN</td><td class="mono">int16 deg</td><td>pivote (+ = droite)</td></tr>
+            <tr><td class="mono">0x10</td><td>NOD</td><td class="mono">—</td><td>hoche (oui)</td></tr>
+            <tr><td class="mono">0x11</td><td>BOW</td><td class="mono">—</td><td>révérence</td></tr>
+            <tr><td class="mono">0x12</td><td>WIGGLE</td><td class="mono">—</td><td>se dandine</td></tr>
+            <tr><td class="mono">0x20</td><td>LOOK</td><td class="mono">int8 dir</td><td>bref coup d'œil</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- STEPS -->
+    <section id="steps">
+      <h2><span class="num">F</span> Montage pas à pas</h2>
+
+      <div class="phase">
+        <div class="idx">0</div>
+        <div class="body">
+          <h3>Bench — sans batterie</h3>
+          <ol>
+            <li>Flasher le firmware sur l'ESP32 seul en USB, vérifier au moniteur série <code>MPU6050 status=0</code> puis <code>BLE advertising</code>.</li>
+            <li>Depuis le téléphone, ouvrir l'app et tester la connexion BLE (« Mochi » doit apparaître). Aucun moteur encore.</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="idx">1</div>
+        <div class="body">
+          <h3>Masse commune &amp; alimentation</h3>
+          <ol>
+            <li>Sertir un <b>XT60</b> sur le pack 3S (ou répartir en <b>WAGO 221</b>, sans soudure).</li>
+            <li>Amener le 12 V sur le <b>jack DC 6,5–16 V de la carte d'extension</b> (régulateur intégré, rien à régler) et sur le <b>bornier 12-36V du CNC Shield</b>. Vérifier au multimètre qu'une broche <code>V</code> sort ~5 V : elle alimentera le HC-SR04.</li>
+            <li>Établir un <b>bus de masse commun</b> : pack, carte d'extension, shield.</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="idx">2</div>
+        <div class="body">
+          <h3>Drivers moteurs — sur CNC Shield</h3>
+          <ol>
+            <li>Enficher les <b>A4988 dans les sockets X et Y</b> (sens des drivers : potentiomètre du bon côté !), poser les <b>dissipateurs</b>.</li>
+            <li>Placer les <b>3 cavaliers de micro-pas</b> sous chaque socket (= 1/16).</li>
+            <li>Régler le <b>courant (Vref)</b> de chaque A4988 (~1,0–1,2 A pour le 17HS4401).</li>
+            <li><b>12 V sur le bornier</b> du shield ; <b>moteurs</b> sur les connecteurs X/Y.</li>
+            <li>Relier l'ESP32 en <b>DuPont</b> sur le bornier de signaux nommé : 26→X.STEP, 27→X.DIR, 25→Y.STEP, 33→Y.DIR, 14→EN, GND→GND, et <b>3V3 → 5V</b> (logique en 3,3 V, jamais 5 V).</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="idx">3</div>
+        <div class="body">
+          <h3>Capteurs</h3>
+          <ol>
+            <li>MPU6050 en I2C (3,3 V), monté <b>bas et rigide</b>, aligné sur l'axe des roues.</li>
+            <li>HC-SR04 sur son trio <b>G/V/S</b> (V = 5 V), ECHO <b>via le diviseur 1 kΩ/2 kΩ</b> vers GPIO35 — toujours obligatoire.</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="idx">4</div>
+        <div class="body">
+          <h3>Premiers tests — roues en l'air</h3>
+          <ol>
+            <li>Robot sur un support, <b>roues ne touchant pas le sol</b>.</li>
+            <li>Sous tension : garder le robot <b>immobile et vertical</b> pendant la calibration IMU.</li>
+            <li>Vérifier que <code>pitch</code> suit l'inclinaison réelle dans la télémétrie.</li>
+            <li>Régler <code>BALANCE_OFFSET_DEG</code> puis les gains PID. Si une roue « fuit » → inverser <code>INVERT_*</code>.</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="idx">5</div>
+        <div class="body">
+          <h3>Debout</h3>
+          <ol>
+            <li>PID stable roues en l'air, puis au sol : affiner <code>KP_STAB</code>/<code>KD_STAB</code>, puis <code>KP_SPEED</code>/<code>KI_SPEED</code> contre la dérive.</li>
+            <li>Tester depuis l'app : <code>forward</code>, <code>turn</code>, <code>nod</code>, <code>bow</code>, <code>wiggle</code>, et surtout <b>STOP</b>.</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- SAFETY -->
+    <section id="safety">
+      <h2><span class="num">G</span> Checklist sécurité</h2>
+      <ul class="check">
+        <li><span class="box"></span><span>12 V branché sur le <b>jack DC 6.5–16V</b> (carte d'extension) et le <b>bornier 12-36V</b> (shield) uniquement — jamais sur 3V3, un V ou un S ; broche <code>V</code> vérifiée à ~5 V avant de brancher le HC-SR04.</span></li>
+        <li><span class="box"></span><span>Pas d'<b>USB et 12 V simultanés</b> (sauf protection confirmée par la doc de la carte).</span></li>
+        <li><span class="box"></span><span><b>Une seule masse commune</b> partout.</span></li>
+        <li><span class="box"></span><span>Condensateur 100 µF présent sur chaque socket du shield (pics de tension → A4988 grillés sinon).</span></li>
+        <li><span class="box"></span><span>Diviseur sur l'ECHO du HC-SR04 (jamais 5 V direct sur un GPIO).</span></li>
+        <li><span class="box"></span><span>Vref des A4988 réglé avant de faire tourner les moteurs.</span></li>
+        <li><span class="box"></span><span>Premiers essais <b>roues en l'air</b>.</span></li>
+        <li><span class="box"></span><span>Ne jamais débrancher un moteur A4988 sous tension (pic destructeur).</span></li>
+      </ul>
+    </section>
+
+  </div>
+
+  <footer>
+    <div class="wrap">
+      <p>Fichiers de référence dans le dépôt : <code>firmware/</code> (PlatformIO), <code>docs/HARDWARE.md</code> (cette page en texte versionné), <code>src/robot/bleProfile.ts</code> &amp; <code>src/robot/bleTransport.ts</code> (côté app). Le brochage fait foi dans <code>firmware/include/config.h</code>.</p>
+    </div>
+  </footer>
+</div>
+
+<script>
+  // Surligne l'entrée de nav de la section visible.
+  const links = [...document.querySelectorAll('nav.toc a')];
+  const map = new Map(links.map(a => [a.getAttribute('href').slice(1), a]));
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.style.color = '');
+        const a = map.get(e.target.id);
+        if (a) { a.style.color = 'var(--ink)'; a.style.background = 'var(--surface-2)'; }
+      }
+    });
+  }, { rootMargin: '-40% 0px -55% 0px' });
+  document.querySelectorAll('section[id]').forEach(s => obs.observe(s));
+</script>
+
+
+</body></html>
+

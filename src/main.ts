@@ -182,7 +182,7 @@ agent = createAgent(
 const liveAccess: LiveAccess | null = devKey
   ? { apiKey: devKey }
   : import.meta.env.PROD
-    ? { tokenEndpoint: '/api/live-token.php' }
+    ? { tokenEndpoint: import.meta.env.BASE_URL + 'api/live-token.php' }
     : null;
 if (liveAccess) {
   live = new LiveConversation(liveAccess, {

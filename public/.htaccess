@@ -1,0 +1,21 @@
+# Mochi — accès privé (démo).
+# Protège TOUTE la page ET /api/live-token.php par mot de passe, pour empêcher
+# n'importe qui de consommer le quota Gemini via le endpoint de jeton.
+#
+# ⚠️ À FAIRE UNE FOIS SUR LE SERVEUR : remplacer le chemin AuthUserFile ci-dessous
+# par le chemin ABSOLU réel de .htpasswd sur ton hébergement OVH.
+# Pour le trouver : dépose un fichier temporaire www/whereami.php contenant
+#   <?php echo __DIR__;
+# ouvre-le dans le navigateur (il affiche le chemin de www/), puis supprime-le.
+# Le .htpasswd est à la racine de www/, donc : <chemin de www>/.htpasswd
+
+AuthType Basic
+AuthName "Mochi - acces prive"
+AuthUserFile "/home/CHANGE_ME/www/.htpasswd"
+Require valid-user
+
+# Ceinture + bretelles : interdit de télécharger les fichiers .ht* par HTTP
+# (le hash du mot de passe reste illisible depuis le web).
+<FilesMatch "^\.ht">
+    Require all denied
+</FilesMatch>

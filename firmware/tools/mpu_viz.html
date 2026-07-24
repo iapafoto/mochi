@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Mochi — Visualiseur MPU6050</title>
+<style>
+  :root {
+    --bg: #14161c; --panel: #1e2230; --text: #e8eaf2; --muted: #8a90a8;
+    --accent: #7ec8ff; --ok: #6fe3a5; --warn: #ffb86b; --err: #ff7a90;
+    --ax: #ff7a90; --ay: #6fe3a5; --az: #7ec8ff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; padding: 18px; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  button {
+    background: var(--accent); color: #0c1220; border: 0; border-radius: 8px;
+    padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { background: #3a4056; color: var(--muted); cursor: default; }
+  #status { margin-left: 12px; color: var(--muted); }
+  #status.ok { color: var(--ok); } #status.err { color: var(--err); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border-radius: 12px; padding: 14px; }
+  .panel h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+
+  /* ---- scène 3D ---- */
+  .scene { height: 300px; perspective: 700px; display: flex; align-items: center; justify-content: center; }
+  .tilt { transform-style: preserve-3d; transform: rotateX(62deg); }
+  .board { position: relative; width: 200px; height: 130px; transform-style: preserve-3d; transition: transform 60ms linear; }
+  .face { position: absolute; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #0c1220; font-weight: 700; }
+  .top    { width: 200px; height: 130px; background: #5c6bc0; border-radius: 8px; transform: translateZ(8px); }
+  .bottom { width: 200px; height: 130px; background: #3a4470; border-radius: 8px; transform: translateZ(-8px); }
+  .side   { background: #4a548c; }
+  .n { width: 200px; height: 16px; transform: rotateX(90deg) translateZ(65px); }
+  .s { width: 200px; height: 16px; transform: rotateX(90deg) translateZ(-65px); top: 114px; }
+  .w { width: 16px; height: 130px; transform: rotateY(90deg) translateZ(-100px); }
+  .e { width: 16px; height: 130px; transform: rotateY(90deg) translateZ(100px); left: 184px; }
+  .chip { position: absolute; width: 34px; height: 34px; background: #22273b; border-radius: 4px;
+          left: 83px; top: 48px; transform: translateZ(9px); }
+  .pins { position: absolute; width: 150px; height: 8px; background: #d9b23c; border-radius: 2px;
+          left: 25px; top: 8px; transform: translateZ(9px); }
+  .axis-label { position: absolute; font-size: 12px; font-weight: 700; }
+  .axX { color: var(--ax); right: -28px; top: 55px; }
+  .axY { color: var(--ay); left: 90px; top: -26px; }
+
+  /* ---- valeurs ---- */
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 4px 8px; }
+  td.k { color: var(--muted); width: 90px; }
+  td.v { font-size: 20px; font-weight: 600; text-align: right; width: 110px; }
+  .bar { height: 8px; background: #303650; border-radius: 4px; position: relative; overflow: hidden; }
+  .bar i { position: absolute; top: 0; bottom: 0; left: 50%; background: var(--accent); border-radius: 4px; }
+  .cx i { background: var(--ax); } .cy i { background: var(--ay); } .cz i { background: var(--az); }
+  canvas { width: 100%; height: 180px; display: block; }
+  .legend { display: flex; gap: 16px; font-size: 12px; margin-top: 6px; }
+  .legend b.x { color: var(--ax); } .legend b.y { color: var(--ay); } .legend b.z { color: var(--az); }
+  #raw { font: 11px/1.4 Consolas, monospace; color: var(--muted); margin-top: 10px; word-break: break-all; }
+  #hz { color: var(--ok); font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>🤖 Mochi — Visualiseur MPU6050</h1>
+  <div class="sub">Lit COM série à 115200 bauds (firmware <code>mputest</code>). Nécessite Chrome ou Edge.</div>
+
+  <button id="btn">🔌 Connecter (choisir COM4)</button>
+  <span id="status">déconnecté</span> <span id="hz"></span>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Orientation 3D (angleX / angleY / angleZ)</h2>
+      <div class="scene"><div class="tilt"><div class="board" id="board">
+        <div class="face bottom"></div>
+        <div class="face side n"></div><div class="face side s"></div>
+        <div class="face side w"></div><div class="face side e"></div>
+        <div class="face top">GY-521</div>
+        <div class="chip"></div><div class="pins"></div>
+        <div class="axis-label axX">+X →</div>
+        <div class="axis-label axY">+Y ↑</div>
+      </div></div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Valeurs instantanées</h2>
+      <table>
+        <tr><td class="k">angleX</td><td class="v" id="vax">–</td><td><div class="bar cx"><i id="bax"></i></div></td></tr>
+        <tr><td class="k">angleY</td><td class="v" id="vay">–</td><td><div class="bar cy"><i id="bay"></i></div></td></tr>
+        <tr><td class="k">angleZ</td><td class="v" id="vaz">–</td><td><div class="bar cz"><i id="baz"></i></div></td></tr>
+        <tr><td class="k">accX</td><td class="v" id="vgx">–</td><td><div class="bar cx"><i id="bgx"></i></div></td></tr>
+        <tr><td class="k">accY</td><td class="v" id="vgy">–</td><td><div class="bar cy"><i id="bgy"></i></div></td></tr>
+        <tr><td class="k">accZ</td><td class="v" id="vgz">–</td><td><div class="bar cz"><i id="bgz"></i></div></td></tr>
+        <tr><td class="k">Temp</td><td class="v" id="vt">–</td><td></td></tr>
+      </table>
+      <div id="raw"></div>
+    </div>
+
+    <div class="panel" style="grid-column: 1 / -1;">
+      <h2>Historique des angles (±90°, ~30 s)</h2>
+      <canvas id="chart" width="1200" height="180"></canvas>
+      <div class="legend"><b class="x">— angleX (roulis)</b><b class="y">— angleY (tangage)</b><b class="z">— angleZ (lacet)</b></div>
+    </div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+const status = (msg, cls) => { $('status').textContent = msg; $('status').className = cls || ''; };
+let history = [];           // {t, x, y, z}
+let count = 0, lastHzT = performance.now();
+
+function setBar(id, val, range) {
+  const pct = Math.max(-1, Math.min(1, val / range)) * 50; // -50..50 %
+  const el = $(id);
+  el.style.left = (pct >= 0 ? 50 : 50 + pct) + '%';
+  el.style.width = Math.abs(pct) + '%';
+}
+
+function update(d) {
+  // Cube : rotation autour de l'axe X du capteur (dessiné horizontal) = rotateX,
+  // autour de Y (vertical écran) = rotateY, lacet = rotateZ. Signes ajustables ici.
+  $('board').style.transform =
+    `rotateZ(${-d.az}deg) rotateX(${-d.ax}deg) rotateY(${d.ay}deg)`;
+
+  $('vax').textContent = d.ax.toFixed(1) + '°';
+  $('vay').textContent = d.ay.toFixed(1) + '°';
+  $('vaz').textContent = d.az.toFixed(1) + '°';
+  $('vgx').textContent = d.gx.toFixed(2) + ' g';
+  $('vgy').textContent = d.gy.toFixed(2) + ' g';
+  $('vgz').textContent = d.gz.toFixed(2) + ' g';
+  $('vt').textContent = d.t.toFixed(1) + ' °C';
+  setBar('bax', d.ax, 90); setBar('bay', d.ay, 90); setBar('baz', ((d.az + 180) % 360 + 360) % 360 - 180, 180);
+  setBar('bgx', d.gx, 2); setBar('bgy', d.gy, 2); setBar('bgz', d.gz, 2);
+
+  const now = performance.now();
+  history.push({ t: now, x: d.ax, y: d.ay, z: d.az });
+  while (history.length && now - history[0].t > 30000) history.shift();
+  drawChart(now);
+
+  count++;
+  if (now - lastHzT > 1000) { $('hz').textContent = count + ' Hz'; count = 0; lastHzT = now; }
+}
+
+function drawChart(now) {
+  const c = $('chart'), ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.strokeStyle = '#303650'; ctx.beginPath();
+  ctx.moveTo(0, c.height / 2); ctx.lineTo(c.width, c.height / 2); ctx.stroke(); // ligne 0°
+  const colors = { x: '#ff7a90', y: '#6fe3a5', z: '#7ec8ff' };
+  for (const k of ['x', 'y', 'z']) {
+    ctx.strokeStyle = colors[k]; ctx.lineWidth = 1.6; ctx.beginPath();
+    history.forEach((p, i) => {
+      const px = c.width - (now - p.t) / 30000 * c.width;
+      const py = c.height / 2 - Math.max(-90, Math.min(90, p[k])) / 90 * (c.height / 2 - 6);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  }
+}
+
+const RE = /angleX=\s*(-?[\d.]+)\s+angleY=\s*(-?[\d.]+)\s+angleZ=\s*(-?[\d.]+)\s+\|\s+accX=\s*(-?[\d.]+)\s*accY=\s*(-?[\d.]+)\s*accZ=\s*(-?[\d.]+)\s+\|\s+T=(-?[\d.]+)/;
+
+$('btn').onclick = async () => {
+  if (!('serial' in navigator)) { status('Web Serial non supporté — utiliser Chrome ou Edge', 'err'); return; }
+  let port;
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+  } catch (e) { status('connexion annulée / port occupé : ' + e.message, 'err'); return; }
+  $('btn').disabled = true;
+  status('connecté — bouge le capteur !', 'ok');
+
+  const reader = port.readable.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line) continue;
+        $('raw').textContent = line;
+        const m = line.match(RE);
+        if (m) update({ ax: +m[1], ay: +m[2], az: +m[3], gx: +m[4], gy: +m[5], gz: +m[6], t: +m[7] });
+      }
+    }
+  } catch (e) { status('lecture interrompue : ' + e.message, 'err'); }
+  $('btn').disabled = false;
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#1a1030" />
+    <title>Mochi — banc de tuning</title>
+  </head>
+  <body>
+    <header class="bar">
+      <button id="connect" class="primary">Connecter le port série</button>
+      <span id="link" class="badge off">déconnecté</span>
+      <span id="rx" class="badge off">pas de port</span>
+      <span id="state" class="badge">—</span>
+      <span id="armed" class="badge">—</span>
+      <span id="glt" class="badge">glt 0</span>
+      <span class="spacer"></span>
+      <button id="record">● Enregistrer</button>
+      <button id="export" disabled>Exporter le log</button>
+    </header>
+
+    <main>
+      <!-- Vue d'assiette : ce que le robot CROIT + la fenêtre d'engagement -->
+      <section class="card attitude">
+        <h2>Ce que le robot croit mesurer</h2>
+        <canvas id="attitude" width="520" height="420"></canvas>
+        <div id="engage" class="engage">
+          <div class="cond" id="cond-pitch"><b>|pitch| &lt; 5°</b><span>—</span></div>
+          <div class="cond" id="cond-gyro"><b>|gyro| &lt; 30°/s</b><span>—</span></div>
+          <div class="verdict" id="verdict">en attente de données</div>
+        </div>
+      </section>
+
+      <section class="side">
+        <div class="card tiles">
+          <div class="tile"><label>pitch <em>écart à l'équilibre</em></label><output id="t-pitch">—</output><span>°</span></div>
+          <div class="tile"><label>gyro <em>vitesse de bascule</em></label><output id="t-gy">—</output><span>°/s</span></div>
+          <div class="tile"><label>tgt <em>angle voulu</em></label><output id="t-tgt">—</output><span>°</span></div>
+          <div class="tile"><label>v <em>vitesse roue</em></label><output id="t-v">—</output><span>mm/s</span></div>
+          <div class="tile"><label>x <em>écart à l'ancre</em></label><output id="t-x">—</output><span>mm</span></div>
+          <div class="tile"><label>MPU brut <em>X / Y</em></label><output id="t-raw">—</output><span></span></div>
+        </div>
+
+        <div class="card">
+          <h2>Historique (20 s)</h2>
+          <canvas id="chart" width="620" height="330"></canvas>
+        </div>
+
+        <div class="card">
+          <h2>Réglages</h2>
+          <div id="gains"></div>
+          <div class="gain-actions">
+            <span id="ratio" class="ratio">—</span>
+            <span class="spacer"></span>
+            <button data-cmd="g">Relire</button>
+            <button data-cmd="w" class="primary">Sauver en NVS</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Console</h2>
+          <form id="cmdform">
+            <input id="cmd" placeholder="g, t, b, p 12, d 48, o 0.81, w …" autocomplete="off" />
+            <button type="submit">Envoyer</button>
+          </form>
+          <div class="quick">
+            <button data-cmd="g">g — état</button>
+            <button data-cmd="t">t — stream</button>
+            <button data-cmd="b">b — calib gyro</button>
+            <button data-cmd="z">z — offset ici</button>
+            <button data-cmd="m" class="danger">m — ARMER / désarmer</button>
+          </div>
+          <pre id="log"></pre>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/tuning/dashboard.ts"></script>
+  </body>
+</html>
