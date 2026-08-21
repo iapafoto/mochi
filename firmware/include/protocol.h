@@ -14,6 +14,19 @@ enum Opcode : uint8_t {
   OP_FORWARD = 0x01,  // int16 cm       avance de N cm
   OP_BACKWARD = 0x02, // int16 cm       recule de N cm
   OP_TURN = 0x03,     // int16 deg      pivote (+ = droite)
+  // Téléguidage CONTINU (manette / joystick / pad du banc). Payload :
+  //   int8 speed   −100..+100 = % de TELEOP_MAX_SPEED_MM_S (+ = avant)
+  //   int8 steer   −100..+100 = % de TELEOP_MAX_TURN_DEG_S (+ = droite)
+  //   uint8 ttl    durée de validité en pas de 10 ms (0 = TELEOP_TTL_MS)
+  // ⚠️ POURQUOI DES POURCENTS ET PAS DES mm/s : le plafond reste UN SEUL endroit
+  // (config.h). Rendre le robot plus doux ne demande alors pas de retoucher les
+  // trois pilotes (app, banc, manette), qui envoient tous « fond de course ».
+  // ⚠️ POURQUOI UN TTL (l'homme mort) : la commande n'est pas un ordre ponctuel
+  // mais un ÉTAT, qu'il faut donc rafraîchir (~10 Hz). Si le lien tombe manette
+  // poussée, le robot s'arrête tout seul au lieu de partir droit devant. Le
+  // B-Robot, piloté en OSC/WiFi, n'a pas ce garde-fou : ses faders gardent leur
+  // dernière valeur, et il continue.
+  OP_DRIVE = 0x04,    // int8 %v, int8 %rot, uint8 ttl×10ms
   OP_NOD = 0x10,      // —              hoche (oui)
   OP_BOW = 0x11,      // —              révérence
   OP_WIGGLE = 0x12,   // —              se dandine

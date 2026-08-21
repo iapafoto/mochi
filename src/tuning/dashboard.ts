@@ -253,7 +253,7 @@ function handleLine(line: string) {
   if (hist.length > HISTORY_N) hist.shift();
 }
 
-async function send(cmd: string) {
+async function send(cmd: string, quiet = false) {
   const bytes = new TextEncoder().encode(cmd + '\n');
   if (linkKind === 'ble' && bleWrite) {
     try {
@@ -268,13 +268,13 @@ async function send(cmd: string) {
     logLine('⚠️ pas connecté');
     return;
   }
-  logLine('> ' + cmd);
+  if (!quiet) logLine('> ' + cmd); // le pad de téléguidage émet à 10 Hz
   // Ces commandes répondent par leur propre message, pas par un printState : sans
   // relecture, le panneau afficherait encore l'ancienne valeur. La casse compte côté
   // firmware (`g` = lecture d'état vs `G` = échelle gyro, `z` = zéro ici vs `Z` =
   // adopter le zéro suggéré par l'intégrale).
   const head = cmd.trim()[0];
-  if ('zynGZVTDHFBx'.includes(head)) {
+  if ('zynGZVTDHFBxAPR'.includes(head)) {
     window.setTimeout(() => send('g'), 200);
   }
 }
@@ -313,6 +313,10 @@ const GAINS: Gain[] = [
   { cmd: 'F', label: "Plancher vitesse", hint: "mm/s : empêche la consigne roue de s'immobiliser au point zéro. LE correctif du « il tombe à la verticale » — 4 suffit, plus haut ne fait qu'ajouter de la vibration", step: 1, dec: 0, min: 0, max: 100 },
   { cmd: 'B', label: "Balancier",        hint: "degrés : oscillation volontaire de la consigne d'angle à 1,5 Hz. Même exigence que F, exprimée en amont (B ≈ F/Kp)", step: 0.1, dec: 2, min: 0, max: 5 },
   { cmd: 'H', label: "Dither",           hint: "mm/s : vibration de la consigne contre le JEU mécanique. Vérifier le jeu à la main avant de s'en servir", step: 5, dec: 0, min: 0, max: 100 },
+  // Conduite — ce ne sont pas des gains, mais c'est ce qui plafonne le déplacement.
+  { cmd: 'A', label: "Penche max",       hint: "degrés : inclinaison autorisée pour se déplacer = plafond d'accélération. Le monter si le robot « refuse » d'avancer (B-Robot : 14 normal, 26 pro)", step: 1, dec: 0, min: 1, max: 30 },
+  { cmd: 'P', label: "Manette : vitesse",  hint: 'mm/s à fond de course, pour un pilote qui envoie des % (app, manette). Le pad ci-dessus a son propre curseur', step: 25, dec: 0, min: 0, max: 2000 },
+  { cmd: 'R', label: "Manette : rotation", hint: '°/s à fond de course', step: 10, dec: 0, min: 0, max: 720 },
 ];
 
 const gainVal: Record<string, number> = {};
@@ -333,6 +337,9 @@ const RE_TAIL: Record<string, RegExp> = {
   H: /\sH=([\d.]+)/,   // dither (jeu mécanique)
   F: /\sF=([\d.]+)/,   // plancher de vitesse roue
   B: /\sB=([\d.]+)/,   // balancier volontaire
+  A: /\sA=([\d.]+)/,   // inclinaison max en déplacement
+  P: /\sP=([\d.]+)/,   // fond de course vitesse (manette)
+  R: /\sR=([\d.]+)/,   // fond de course rotation (manette)
 };
 
 function parseGains(line: string): void {
@@ -385,6 +392,122 @@ function buildGains() {
   host.querySelectorAll<HTMLButtonElement>('button.step').forEach((b) => {
     b.addEventListener('click', () => bump(b.dataset.g!, Number(b.dataset.dir)));
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  Téléguidage (pad du banc)
+// ─────────────────────────────────────────────────────────────────────────
+// Le firmware n'attend pas un ORDRE mais un ÉTAT : `u <mm/s> <deg/s>` vaut
+// TELEOP_TTL_MS (500 ms) puis expire tout seul. On ré-émet donc à 10 Hz tant
+// qu'une direction est tenue. Conséquence qui vaut d'être dite : il n'y a RIEN à
+// couper en cas de pépin — onglet fermé, BLE tombé, PC en veille, le robot
+// s'arrête de lui-même parce que plus personne ne rafraîchit.
+const DRIVE_HZ = 10;
+// Rampe côté PILOTE (pas côté robot) : une touche est tout ou rien, et demander
+// 300 mm/s d'un bloc à un pendule inversé le fait se pencher en butée d'un coup.
+// 0,45 s pour atteindre le fond de course : assez vif pour se sentir aux
+// commandes, assez doux pour que la boucle externe suive.
+const DRIVE_RAMP_S = 0.45;
+
+type Dir = 'fwd' | 'back' | 'left' | 'right';
+const held: Record<Dir, boolean> = { fwd: false, back: false, left: false, right: false };
+let driveV = 0; // mm/s réellement commandés (après rampe)
+let driveW = 0; // deg/s
+let driveTimer = 0;
+let driveBusy = false; // un envoi est en vol : ne pas en empiler un second
+
+const driveMax = () => ({
+  v: Number($<HTMLInputElement>('d-speed-in').value),
+  w: Number($<HTMLInputElement>('d-turn-in').value),
+});
+
+function approach(cur: number, target: number, step: number): number {
+  return cur < target ? Math.min(target, cur + step) : Math.max(target, cur - step);
+}
+
+function setDir(dir: Dir, on: boolean) {
+  if (held[dir] === on) return;
+  held[dir] = on;
+  document.querySelector('.pad [data-dir="' + dir + '"]')?.classList.toggle('on', on);
+  if (on) startDrive();
+}
+
+function stopDriveTimer() {
+  if (!driveTimer) return;
+  window.clearInterval(driveTimer);
+  driveTimer = 0;
+}
+
+/** Relâche tout. `hard` = arrêt immédiat sans rampe (bouton stop, espace, perte de lien). */
+function driveRelease(hard: boolean) {
+  (Object.keys(held) as Dir[]).forEach((d) => setDir(d, false));
+  if (!hard) return;
+  driveV = 0;
+  driveW = 0;
+  stopDriveTimer();
+  drawDrive();
+  if (linkKind) send('u 0', true);
+}
+
+function startDrive() {
+  if (driveTimer) return;
+  driveTimer = window.setInterval(driveTick, 1000 / DRIVE_HZ);
+  driveTick();
+}
+
+async function driveTick() {
+  if (driveBusy) return; // un envoi traîne : sauter ce tour, ne pas faire la queue
+  if (!linkKind) { driveRelease(true); return; }
+  const max = driveMax();
+  const tv = (held.fwd ? max.v : 0) - (held.back ? max.v : 0);
+  const tw = (held.right ? max.w : 0) - (held.left ? max.w : 0);
+  const k = 1 / (DRIVE_HZ * DRIVE_RAMP_S); // fraction du fond de course par tick
+  driveV = approach(driveV, tv, max.v * k);
+  driveW = approach(driveW, tw, max.w * k);
+  drawDrive();
+  driveBusy = true;
+  try {
+    await send('u ' + driveV.toFixed(0) + ' ' + driveW.toFixed(0), true);
+  } finally {
+    driveBusy = false;
+  }
+  // Plus rien de tenu et la rampe est revenue à zéro : on rend la main. Cesser
+  // d'émettre est le comportement voulu — le robot n'a pas besoin qu'on lui
+  // répète qu'il est à l'arrêt, l'expiration de la dernière commande suffit.
+  if (!tv && !tw && driveV === 0 && driveW === 0) stopDriveTimer();
+}
+
+function drawDrive() {
+  const el = $('d-live');
+  const moving = driveV !== 0 || driveW !== 0;
+  el.classList.toggle('on', moving);
+  el.textContent = !linkKind
+    ? 'pas connecté'
+    : moving
+      ? `v ${driveV > 0 ? '+' : ''}${driveV.toFixed(0)} mm/s · rot ${driveW > 0 ? '+' : ''}${driveW.toFixed(0)} °/s`
+      : "à l'arrêt";
+}
+
+// Clavier. Volontairement derrière une case à cocher : sur cette page on tape des
+// commandes et on règle des gains — une flèche qui fait partir le robot pendant
+// qu'on cherche un champ serait une très mauvaise surprise.
+// `e.code` = touche PHYSIQUE : ZQSD (AZERTY) et WASD (QWERTY) sont les mêmes
+// touches, donc les deux marchent sans rien savoir de la disposition.
+const DRIVE_KEYS: Record<string, Dir | 'stop'> = {
+  ArrowUp: 'fwd', ArrowDown: 'back', ArrowLeft: 'left', ArrowRight: 'right',
+  KeyW: 'fwd', KeyS: 'back', KeyA: 'left', KeyD: 'right',
+  Space: 'stop',
+};
+
+function driveKey(e: KeyboardEvent, down: boolean) {
+  if (!($<HTMLInputElement>('d-kb').checked)) return;
+  const t = e.target as HTMLElement | null;
+  if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return; // on tape, on ne pilote pas
+  const dir = DRIVE_KEYS[e.code];
+  if (!dir) return;
+  e.preventDefault(); // flèches = défilement, espace = clic du bouton qui a le focus
+  if (dir === 'stop') { if (down) driveRelease(true); return; }
+  setDir(dir, down);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -653,6 +776,7 @@ function frame() {
   drawChart();
   drawTiles();
   drawRx();
+  drawDrive();
   requestAnimationFrame(frame);
 }
 
@@ -669,6 +793,39 @@ document.querySelectorAll<HTMLButtonElement>('button[data-cmd]').forEach((b) => 
   b.addEventListener('click', () => send(b.dataset.cmd!));
 });
 buildGains();
+// --- Pad de téléguidage ---
+document.querySelectorAll<HTMLButtonElement>('.pad .dir').forEach((b) => {
+  const dir = b.dataset.dir as Dir | 'stop';
+  if (dir === 'stop') {
+    b.addEventListener('click', () => driveRelease(true));
+    return;
+  }
+  const release = () => setDir(dir, false);
+  b.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    // Capture du pointeur : sans elle, glisser le doigt hors du bouton avale le
+    // `pointerup` et la direction resterait tenue — donc le robot partirait.
+    b.setPointerCapture(e.pointerId);
+    setDir(dir, true);
+  });
+  b.addEventListener('pointerup', release);
+  b.addEventListener('pointercancel', release);
+  b.addEventListener('lostpointercapture', release);
+});
+['d-speed', 'd-turn'].forEach((id) => {
+  const input = $<HTMLInputElement>(id + '-in');
+  const out = $(id);
+  const show = () => { out.textContent = input.value; };
+  input.addEventListener('input', show);
+  show();
+});
+window.addEventListener('keydown', (e) => driveKey(e, true));
+window.addEventListener('keyup', (e) => driveKey(e, false));
+// Perdre le focus ou l'onglet, c'est perdre le `keyup` : sans ça, un Alt+Tab en
+// plein virage laisserait la touche « tenue » côté page.
+window.addEventListener('blur', () => driveRelease(true));
+document.addEventListener('visibilitychange', () => { if (document.hidden) driveRelease(true); });
+
 $('record').addEventListener('click', () => {
   recording = !recording;
   $('record').textContent = recording ? '■ Arrêter' : '● Enregistrer';

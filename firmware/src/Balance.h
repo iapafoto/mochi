@@ -21,6 +21,19 @@ class Balance {
   // Réception d'une commande app (cœur 0). payload = octets après l'opcode.
   void onCommand(uint8_t op, const uint8_t* payload, size_t len);
 
+  // ─── Téléguidage continu (cœur 0) ───────────────────────────────────────
+  // `speedMmS` alimente la boucle EXTERNE (le robot se penche pour l'atteindre),
+  // `steerDegS` est injecté sur le différentiel des roues. La commande EXPIRE au
+  // bout de `ttlMs` : c'est un homme mort, pas un ordre ponctuel — le pilote doit
+  // la rafraîchir (~10 Hz) tant qu'il maintient la manette. Cf. protocol.h.
+  void drive(float speedMmS, float steerDegS, uint32_t ttlMs);
+  // Idem à partir d'une manette : entrées normalisées −1..+1, mises à l'échelle
+  // des plafonds de téléguidage, avec expo sur la direction (cf. config.h).
+  void driveNormalized(float speedFrac, float steerFrac, uint32_t ttlMs);
+  // Arrêt du déplacement — l'équilibre, lui, reste actif (couper les moteurs
+  // d'un robot debout le ferait tomber).
+  void stopMotion();
+
   // Snapshot thread-safe pour la télémétrie (cœur 0).
   TelemetryPacket telemetry() const;
 
@@ -44,6 +57,20 @@ class Balance {
     if (v == 0.0f) autoTrimDeg_ = 0.0f;
   }
   void setMaxAccel(float stepsS2);                      // accél. driver, en direct [console `n`]
+  // Inclinaison max que la boucle externe peut demander pour se déplacer
+  // [console `A`] : c'est le plafond d'accélération du robot (cf. config.h).
+  void setMaxLeanDeg(float deg) { maxLeanDeg_ = constrain(deg, 1.0f, 30.0f); }
+  float maxLeanDeg() const { return maxLeanDeg_; }
+  // Fond de course du téléguidage [console `P` et `R`] : ce que vaut « manette à
+  // fond ». Les pilotes (app, banc, manette) envoient des pourcentages, le robot
+  // décide de ce qu'ils valent.
+  void setTeleopMaxSpeed(float mmS) { teleopMaxSpeedMmS_ = constrain(mmS, 0.0f, 2000.0f); }
+  float teleopMaxSpeed() const { return teleopMaxSpeedMmS_; }
+  void setTeleopMaxTurn(float degS) { teleopMaxTurnDegS_ = constrain(degS, 0.0f, 720.0f); }
+  float teleopMaxTurn() const { return teleopMaxTurnDegS_; }
+  // Consignes de déplacement en cours (pour l'affichage de la console).
+  float cmdSpeedMmS() const { return cmdSpeed_; }
+  float cmdSteerDegS() const { return cmdSteer_; }
   // Vitesse roue maximale [console `V`] : autorité de rattrapage du contrôleur.
   void setMaxWheelSpeed(float mmS) { maxWheelSpeedMmS_ = constrain(mmS, 100.0f, 3000.0f); }
   float maxWheelSpeed() const { return maxWheelSpeedMmS_; }
@@ -377,6 +404,9 @@ class Balance {
   volatile float kpPos_ = 0.0f;    // rappel vers l'ancre de position (0 = off)
   volatile float autoTrimGain_ = 0.0f; // gain auto-trim θ₀ (0 = off) ; écrit cœur 0
   volatile float maxWheelSpeedMmS_ = MAX_WHEEL_SPEED_MM_S; // autorité de rattrapage [console `V`]
+  volatile float maxLeanDeg_ = MAX_LEAN_DEG;         // inclinaison max en déplacement [console `A`]
+  volatile float teleopMaxSpeedMmS_ = TELEOP_MAX_SPEED_MM_S; // fond de course [console `P`]
+  volatile float teleopMaxTurnDegS_ = TELEOP_MAX_TURN_DEG_S; // fond de course [console `R`]
   volatile float speedEstTilt_ = 0.0f; // k de estSpeed = v_roue + k·θ̇ [console `T`]
   float maxAccelStepsS2_ = 0.0f;   // accél. driver courante (set via begin() / console `n`)
   volatile float filterGyroCoef_ = FILTER_GYRO_COEF; // poids gyro fusion (console `y`)

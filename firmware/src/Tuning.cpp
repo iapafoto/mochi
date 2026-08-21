@@ -47,6 +47,9 @@ void Tuning::begin(Balance* balance, Console& io) {
         balance_->setDitherMmS(prefs.getFloat("dither", balance_->ditherMmS()));
         balance_->setSpeedFloorMmS(prefs.getFloat("vfloor", balance_->speedFloorMmS()));
         balance_->setSwayDeg(prefs.getFloat("sway", balance_->swayDeg()));
+        balance_->setMaxLeanDeg(prefs.getFloat("lean", balance_->maxLeanDeg()));
+        balance_->setTeleopMaxSpeed(prefs.getFloat("tlSpeed", balance_->teleopMaxSpeed()));
+        balance_->setTeleopMaxTurn(prefs.getFloat("tlTurn", balance_->teleopMaxTurn()));
       } else if (hasV1) {
         // Gains de la génération précédente ignorés VOLONTAIREMENT (cf. ci-dessus).
       } else {
@@ -277,6 +280,36 @@ void Tuning::handleLine(char* line) {
       printState();
       break;
     }
+    // --- Teleguidage ---
+    // `u <mm/s> [deg/s] [ms]` — avancer / pivoter. La commande EXPIRE d'elle-meme
+    // (homme mort, cf. protocol.h) : tapee a la main elle donne une pichenette de
+    // TELEOP_TTL_MS, le pad du banc la rafraichit a 10 Hz tant qu'on appuie.
+    // `u 0` = arret immediat.
+    case 'u': {
+      char* end = nullptr;
+      const float v = strtod(arg, &end);
+      const float w = (end && *end) ? strtod(end, &end) : 0.0f;
+      const double ms = (end && *end) ? strtod(end, &end) : 0.0;
+      balance_->drive(v, w, (uint32_t)(ms < 0 ? 0 : ms));
+      io_->printf("[tune] pilote v=%+.0f mm/s rot=%+.0f deg/s pendant %lu ms%s\n",
+                  balance_->cmdSpeedMmS(), balance_->cmdSteerDegS(),
+                  (unsigned long)(ms > 0 ? (uint32_t)ms : TELEOP_TTL_MS),
+                  balance_->armed() ? "" : " — MOTEURS DESARMES (`m`)");
+      break;
+    }
+    case 'A':
+      balance_->setMaxLeanDeg(atof(arg));
+      io_->printf("[tune] inclinaison max en deplacement = %.1f deg "
+                  "(B-Robot : 14 normal / 26 pro)\n", balance_->maxLeanDeg());
+      break;
+    case 'P':
+      balance_->setTeleopMaxSpeed(atof(arg));
+      io_->printf("[tune] fond de course vitesse = %.0f mm/s\n", balance_->teleopMaxSpeed());
+      break;
+    case 'R':
+      balance_->setTeleopMaxTurn(atof(arg));
+      io_->printf("[tune] fond de course rotation = %.0f deg/s\n", balance_->teleopMaxTurn());
+      break;
     case 'j': {
       if (balance_->armed()) { io_->println("[tune] j : desarmer d'abord (`m`)"); break; }
       balance_->setJog(atof(arg));
@@ -361,6 +394,14 @@ void Tuning::printHelp() {
       "             (fiable) vs `y 0.9999` = angle gyro ; basculer 90 deg, ajuster.\n"
       "  l / r      inverser le sens de la roue gauche / droite\n"
       "  j <mm/s>   test roues en direct, sans equilibre (desarme seulement ; j 0 = stop)\n"
+      "  --- teleguidage (le robot doit etre ARME et en equilibre) ---\n"
+      "  u <mm/s> [deg/s] [ms]  piloter : avancer(+)/reculer(-), pivoter droite(+)\n"
+      "             la commande EXPIRE (homme mort) — tapee a la main = une pichenette\n"
+      "             de 0,5 s ; le pad du banc la rafraichit tant qu'on appuie. `u 0` = stop\n"
+      "  A <deg>    inclinaison max autorisee pour se deplacer = plafond d'acceleration\n"
+      "             (monter si le robot refuse d'avancer ; B-Robot : 14 normal / 26 pro)\n"
+      "  P <mm/s>   fond de course vitesse d'une manette (OP_DRIVE en %)\n"
+      "  R <deg/s>  fond de course rotation d'une manette\n"
       "  t          stream pitch/consigne/vitesse ON/OFF (10 Hz)\n"
       "  m          armer/desarmer les moteurs (banc d'essai)\n"
       "  w          sauver les reglages en NVS (recharges au boot)\n"
@@ -371,7 +412,8 @@ void Tuning::printState() {
   io_->printf(
       "[tune] p=%.3f d=%.3f v=%.4f i=%.5f q=%.3f o=%+.2f e=%.3f axe=%s%c invL=%d invR=%d | "
       "pitch=%+.2f glt=%lu acc=%.0f y=%.4f s=%.4f gs=%.3f trim=%+.2f | "
-      "V=%.0f T=%.2f D=%u H=%.0f F=%.0f B=%.2f bias=%+.2f o*=%+.2f %s%s\n",
+      "V=%.0f T=%.2f D=%u H=%.0f F=%.0f B=%.2f | conduite A=%.0f P=%.0f R=%.0f | "
+      "bias=%+.2f o*=%+.2f %s%s\n",
       balance_->kiAng(), balance_->kpAng(), balance_->kpSpeed(), balance_->kiSpeed(),
       balance_->kpPos(), balance_->offsetDeg(), balance_->kdAng(), balance_->pitchSign() < 0 ? "-" : "",
       "xyz"[balance_->pitchAxis() % 3], balance_->invertLeft(), balance_->invertRight(),
@@ -380,6 +422,7 @@ void Tuning::printState() {
       balance_->gyroScale(), balance_->autoTrimDeg(),
       balance_->maxWheelSpeed(), balance_->speedEstTilt(), (unsigned)balance_->dlpf(),
       balance_->ditherMmS(), balance_->speedFloorMmS(), balance_->swayDeg(),
+      balance_->maxLeanDeg(), balance_->teleopMaxSpeed(), balance_->teleopMaxTurn(),
       balance_->gyroBiasDps(), balance_->suggestedOffsetDeg(),
       stateName(balance_->state()), balance_->armed() ? "" : " (desarme)");
   // Bilan des coupures depuis le boot. Un run qui « a des absences » sans qu'AUCUN
@@ -416,6 +459,9 @@ void Tuning::save() {
   prefs.putFloat("dither", balance_->ditherMmS());
   prefs.putFloat("vfloor", balance_->speedFloorMmS());
   prefs.putFloat("sway", balance_->swayDeg());
+  prefs.putFloat("lean", balance_->maxLeanDeg());
+  prefs.putFloat("tlSpeed", balance_->teleopMaxSpeed());
+  prefs.putFloat("tlTurn", balance_->teleopMaxTurn());
   // Purge des clés des générations précédentes (sinon `isKey("kpAng")` ferait
   // croire éternellement à une migration en attente). `isKey` d'abord : après un
   // `f` elles n'existent pas et `remove` loggerait une erreur NOT_FOUND.

@@ -50,6 +50,37 @@
           <canvas id="chart" width="620" height="330"></canvas>
         </div>
 
+        <!-- Téléguidage. Le pad n'envoie pas un ordre mais un ÉTAT : `u <mm/s>
+             <deg/s>` ré-émis à 10 Hz tant qu'une touche est tenue, et qui expire
+             tout seul côté robot (homme mort). Si l'onglet se ferme, si le BLE
+             tombe ou si le PC se met en veille, le robot s'arrête de lui-même —
+             il n'y a rien à couper. Même contrat pour la manette à venir. -->
+        <div class="card">
+          <h2>Téléguidage</h2>
+          <div class="drive">
+            <div class="pad">
+              <button class="dir" data-dir="fwd" title="avancer">▲</button>
+              <button class="dir" data-dir="left" title="pivoter à gauche">◀</button>
+              <button class="dir stop danger" data-dir="stop" title="stop">■</button>
+              <button class="dir" data-dir="right" title="pivoter à droite">▶</button>
+              <button class="dir" data-dir="back" title="reculer">▼</button>
+            </div>
+            <div class="drive-set">
+              <label>Vitesse <output id="d-speed">120</output> mm/s
+                <input id="d-speed-in" type="range" min="20" max="400" step="10" value="120" />
+              </label>
+              <label>Rotation <output id="d-turn">60</output> °/s
+                <input id="d-turn-in" type="range" min="10" max="240" step="10" value="60" />
+              </label>
+              <label class="kb">
+                <input id="d-kb" type="checkbox" />
+                clavier : flèches ou ZQSD, espace = stop
+              </label>
+              <div id="d-live" class="drive-live">à l'arrêt</div>
+            </div>
+          </div>
+        </div>
+
         <div class="card">
           <h2>Réglages</h2>
           <div id="gains"></div>

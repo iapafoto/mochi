@@ -47,11 +47,17 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     // précédent, sinon le premier bloc de console de la session suivante peut
     // être tronqué silencieusement.
     bridge_->setMtu(23);
-    // SÉCURITÉ : plus de lien = plus de pilote. Le jog (`j`, roues en direct,
-    // moteurs désarmés) est la seule commande qui laisse le robot en mouvement
-    // continu — on la coupe. L'équilibre, lui, est laissé actif : couper les
-    // moteurs d'un robot debout le ferait tomber.
-    if (Balance* b = bridge_->balance()) b->setJog(0);
+    // SÉCURITÉ : plus de lien = plus de pilote. On coupe donc TOUT ce qui laisse
+    // le robot en mouvement continu : le jog (`j`, roues en direct, moteurs
+    // désarmés) et le téléguidage. L'équilibre, lui, est laissé actif : couper
+    // les moteurs d'un robot debout le ferait tomber.
+    // ⚠️ Le téléguidage a DÉJÀ son homme mort (TELEOP_TTL_MS) : ceci n'est que la
+    // ceinture par-dessus les bretelles, et elle agit tout de suite au lieu
+    // d'attendre l'expiration.
+    if (Balance* b = bridge_->balance()) {
+      b->setJog(0);
+      b->stopMotion();
+    }
     NimBLEDevice::startAdvertising();
   }
   void onMTUChange(uint16_t mtu, ble_gap_conn_desc*) override {

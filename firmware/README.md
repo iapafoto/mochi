@@ -125,6 +125,7 @@ des commandes FORWARD/TURN soient justes.
 | `0x01` FORWARD `int16 cm` | avance | croisière avant, durée ≈ distance/vitesse |
 | `0x02` BACKWARD `int16 cm` | recule | idem, arrière |
 | `0x03` TURN `int16 deg` | pivote | rotation sur place (+ = droite) |
+| `0x04` DRIVE `int8 %v, int8 %rot, uint8 ttl` | téléguidage | consigne CONTINUE, en % des fonds de course (`P`/`R`) ; **expire** après `ttl`×10 ms |
 | `0x10` NOD | oui | hochement avant/arrière (~1 s) |
 | `0x11` BOW | révérence | penche en avant puis se redresse |
 | `0x12` WIGGLE | dandine | frétille gauche/droite (~1,2 s) |
@@ -132,7 +133,44 @@ des commandes FORWARD/TURN soient justes.
 
 > FORWARD/BACKWARD sont **temporisés** (croisière pendant une durée calculée),
 > pas asservis en distance absolue — suffisant pour une démo. Passer à un
-> asservissement par odométrie des pas si besoin de précision.
+> asservissement par odométrie des pas si besoin de précision. (Le B-Robot, lui,
+> fait ça : un PD de position sur les pas dont la sortie **redevient** un
+> throttle — cf. `positionControlMode` dans son `.ino`. Toute la machinerie
+> existe déjà ici : `forwardSteps()`, `posAnchorSteps_`, `kpPos_`.)
+
+## Téléguidage (avance / recule / pivote)
+
+Les deux axes n'entrent **pas au même endroit** de la chaîne de commande, et
+c'est ce qu'il faut avoir en tête avant de régler quoi que ce soit :
+
+- la **vitesse** est la *consigne de la boucle externe* : le robot se **penche**
+  pour l'atteindre. Elle est donc limitée par `A` (inclinaison max autorisée),
+  et sa réponse est *non minimum de phase* — pour partir en avant, les roues
+  commencent par reculer. C'est normal, et c'est pourquoi `v`/`i` restent doux ;
+- la **rotation** est injectée *directement* sur le différentiel des roues,
+  après toute la boucle : pivoter ne remet pas l'équilibre en jeu.
+
+La commande est un **état, pas un ordre** : elle vaut `TELEOP_TTL_MS` (500 ms)
+puis expire. Le pilote la rafraîchit ~10 Hz tant qu'il tient la commande. C'est
+l'**homme mort** : lien BLE coupé, onglet fermé, PC en veille — le robot
+s'arrête tout seul, il n'y a rien à couper. (Le B-Robot n'a pas ce garde-fou :
+ses faders OSC gardent leur dernière valeur, et il continue.)
+
+| Commande | Effet |
+|---|---|
+| `u <mm/s> [deg/s] [ms]` | piloter. Tapée à la main = une pichenette de 0,5 s ; `u 0` = stop |
+| `A <deg>` | inclinaison max pour se déplacer = **plafond d'accélération** (défaut 12 ; B-Robot : 14 normal, 26 pro) |
+| `P <mm/s>` / `R <deg/s>` | fonds de course d'une manette (ce que vaut « à fond » pour un pilote qui envoie des %) |
+
+Au banc, le pad de `tuning.html` fait tout ça : boutons, clavier (flèches ou
+ZQSD, espace = stop), curseurs de vitesse/rotation, et une rampe côté pilote
+(0,45 s) — parce qu'une touche est tout ou rien et qu'un pendule inversé à qui
+on demande 300 mm/s d'un bloc se penche en butée d'un coup.
+
+**Premier essai** : robot en équilibre et armé, `P 150` pour commencer doux, une
+pichenette avant (`u 100`), et regarder `tgt` dans le stream — c'est l'angle que
+la boucle externe demande. S'il tape la butée `A` en permanence, c'est `A` qu'il
+faut monter, pas les gains.
 
 ## Notes
 

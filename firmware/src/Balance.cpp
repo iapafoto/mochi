@@ -5,9 +5,8 @@
 #include "config.h"
 
 namespace {
-// Angle de consigne max imposé par le PID de vitesse (limite l'inclinaison
-// prise pour se déplacer).
-constexpr float MAX_LEAN_DEG = 12.0f;
+// (L'angle de consigne max — l'inclinaison prise pour se déplacer — a déménagé
+// dans config.h : c'est devenu un réglable de conduite, cf. console `A`.)
 // Bornes de l'intégrateur de vitesse (anti-windup).
 constexpr float SPEED_INTEG_LIMIT = 4000.0f;
 // Temps laissé au filtre complémentaire pour converger après boot/calibration
@@ -65,6 +64,9 @@ void Balance::applyDefaultTuning() {
   setMaxAccel(MAX_ACCEL_STEPS_S2);
   setFilterCoef(FILTER_GYRO_COEF); // poids gyro de la fusion d'angle (console `y`)
   maxWheelSpeedMmS_ = MAX_WHEEL_SPEED_MM_S; // autorité de rattrapage (console `V`)
+  setMaxLeanDeg(MAX_LEAN_DEG);              // inclinaison max en déplacement (console `A`)
+  setTeleopMaxSpeed(TELEOP_MAX_SPEED_MM_S); // fond de course manette (console `P`)
+  setTeleopMaxTurn(TELEOP_MAX_TURN_DEG_S);  // fond de course manette (console `R`)
   setSpeedFloorMmS(SPEED_FLOOR_MM_S); // plancher anti-enlisement (console `F`)
   speedEstTilt_ = SPEED_EST_TILT_MM_S_PER_DPS; // correction v_robot ≠ v_roue (console `T`)
   setDlpf(MPU_DLPF_CFG);          // appliqué au prochain tick du cœur 1 (console `D`)
@@ -452,11 +454,12 @@ void Balance::update() {
   // part à fond. Quand l'adhérence revient, le contrôleur commande encore
   // pleine bourre dans une direction qui n'est plus la bonne. Un décrochage se
   // payait donc DEUX fois : pendant, puis après.
-  if (fabsf(targetAngle) > MAX_LEAN_DEG && (targetAngle > 0) == (speedError > 0)) {
+  const float leanMax = maxLeanDeg_; // réglable en direct (console `A`)
+  if (fabsf(targetAngle) > leanMax && (targetAngle > 0) == (speedError > 0)) {
     speedInteg_ = speedIntegPrev; // gel : la sortie est déjà saturée
     targetAngle = kpSpeed_ * speedError + kiSpeed_ * speedInteg_;
   }
-  targetAngle = constrain(targetAngle, -MAX_LEAN_DEG, MAX_LEAN_DEG);
+  targetAngle = constrain(targetAngle, -leanMax, leanMax);
   // Balancier volontaire (console `B`) : phase accumulee plutot que sinf(millis()),
   // dont l'argument croissant perd sa precision au bout de quelques heures.
   if (swayDeg_ != 0.0f) {
@@ -553,6 +556,15 @@ void Balance::applyWheels(float leftMmS, float rightMmS) {
   // Il faut les connaitre AVANT de decider quoi que ce soit, parce que le verrou
   // de la phase 2 compare le sens DEMANDE au sens ou va reellement la rampe.
   auto plan = [&](float mmS, bool invert, long lastSps, long& sps, long& out) {
+    // Bride PAR ROUE, après l'ajout de la direction (le B-Robot fait le même
+    // `constrain(motor1, ±MAX_CONTROL_OUTPUT)` juste après `+ steering`).
+    // Sans elle, `motorSpeedMmS_` est bien borné à ±V mais le différentiel de
+    // pivot passe par-dessus : en virage à pleine vitesse, une roue se voyait
+    // commandée AU-DELÀ du domaine où le pas-à-pas tient — et un pas-à-pas
+    // décroché ne rend AUCUN couple, donc le robot tombe du côté de la roue
+    // sortie du domaine. Le virage perd de l'autorité quand ça sature : c'est le
+    // compromis assumé, et c'est celui de la référence.
+    mmS = constrain(mmS, -maxWheelSpeedMmS_, maxWheelSpeedMmS_);
     long want = lroundf(mmS * STEPS_PER_MM);
     if (invert) want = -want;
     sps = constrain(want, lastSps - maxStep, lastSps + maxStep);
@@ -774,13 +786,18 @@ void Balance::onCommand(uint8_t op, const uint8_t* payload, size_t len) {
     return len >= 2 ? (int16_t)(payload[0] | (payload[1] << 8)) : 0; // little-endian
   };
   switch (op) {
-    case OP_STOP: {
-      taskENTER_CRITICAL(&mux_);
-      cmdSpeed_ = 0.0f;
-      cmdSteer_ = 0.0f;
-      motionEndMs_ = 0;
-      gestureOp_ = 0;
-      taskEXIT_CRITICAL(&mux_);
+    case OP_STOP:
+      stopMotion();
+      break;
+    case OP_DRIVE: {
+      // Téléguidage continu : deux axes normalisés en % + TTL (cf. protocol.h).
+      // Les octets sont SIGNÉS : un cast direct depuis uint8_t rendrait −100
+      // comme 156, soit « plein avant » au lieu de « plein arrière ».
+      const float v = len >= 1 ? (float)(int8_t)payload[0] / 100.0f : 0.0f;
+      const float w = len >= 2 ? (float)(int8_t)payload[1] / 100.0f : 0.0f;
+      const uint32_t ttl = len >= 3 && payload[2] != 0
+                               ? (uint32_t)payload[2] * 10u : TELEOP_TTL_MS;
+      driveNormalized(v, w, ttl);
       break;
     }
     case OP_FORWARD: {
@@ -822,11 +839,45 @@ void Balance::onCommand(uint8_t op, const uint8_t* payload, size_t len) {
 }
 
 void Balance::startTimedMotion(float speedMmS, float steerDegS, uint32_t durationMs) {
+  // 0 est la valeur SENTINELLE de « aucun déplacement en cours » : une échéance
+  // qui tomberait pile dessus (au repliement de millis(), tous les 49 jours)
+  // rendrait la commande ÉTERNELLE — donc un robot qui part et ne s'arrête plus.
+  uint32_t end = millis() + (durationMs == 0 ? 1 : durationMs);
+  if (end == 0) end = 1;
   taskENTER_CRITICAL(&mux_);
   cmdSpeed_ = speedMmS;
   cmdSteer_ = steerDegS;
-  motionEndMs_ = millis() + (durationMs == 0 ? 1 : durationMs);
+  motionEndMs_ = end;
   taskEXIT_CRITICAL(&mux_);
+}
+
+void Balance::stopMotion() {
+  taskENTER_CRITICAL(&mux_);
+  cmdSpeed_ = 0.0f;
+  cmdSteer_ = 0.0f;
+  motionEndMs_ = 0;
+  gestureOp_ = 0;
+  taskEXIT_CRITICAL(&mux_);
+}
+
+void Balance::drive(float speedMmS, float steerDegS, uint32_t ttlMs) {
+  // Un déplacement téléguidé n'est qu'un déplacement temporisé dont le pilote
+  // rearme le chronomètre : rien de neuf sous le capot, et donc rien de neuf à
+  // vérifier côté boucle temps réel — elle voit exactement ce qu'elle voit déjà
+  // pour un FORWARD (cf. `motionExpired` dans update()).
+  startTimedMotion(constrain(speedMmS, -teleopMaxSpeedMmS_, teleopMaxSpeedMmS_),
+                   constrain(steerDegS, -teleopMaxTurnDegS_, teleopMaxTurnDegS_),
+                   ttlMs == 0 ? TELEOP_TTL_MS : ttlMs);
+}
+
+void Balance::driveNormalized(float speedFrac, float steerFrac, uint32_t ttlMs) {
+  const float v = constrain(speedFrac, -1.0f, 1.0f);
+  float w = constrain(steerFrac, -1.0f, 1.0f);
+  // Expo sur la direction (recette B-Robot) : écrase le milieu de course, laisse
+  // le fond de course intact. |w|·(|w| + expo)/(1 + expo) — normalisé pour rendre
+  // exactement 1 en butée (cf. TELEOP_STEER_EXPO dans config.h).
+  w = (w * fabsf(w) + TELEOP_STEER_EXPO * w) / (1.0f + TELEOP_STEER_EXPO);
+  drive(v * teleopMaxSpeedMmS_, w * teleopMaxTurnDegS_, ttlMs);
 }
 
 void Balance::triggerGesture(uint8_t op) {

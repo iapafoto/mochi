@@ -9,6 +9,11 @@ export const Op = {
   FORWARD: 0x01, // int16 cm
   BACKWARD: 0x02, // int16 cm
   TURN: 0x03, // int16 deg
+  // Téléguidage CONTINU (manette / joystick), cf. firmware/include/protocol.h :
+  //   args = [vitesse %, rotation %, ttl ms]  — % dans −100..+100
+  // Ce n'est pas un ordre ponctuel mais un ÉTAT, qui EXPIRE côté robot s'il n'est
+  // pas rafraîchi (~10 Hz) : lien coupé manette poussée ⇒ le robot s'arrête.
+  DRIVE: 0x04, // int8 %v, int8 %rot, uint8 ttl×10ms
   NOD: 0x10,
   BOW: 0x11,
   WIGGLE: 0x12,
@@ -53,6 +58,18 @@ export function encodeMessage(op: number, args: number[]): Uint8Array {
       const dv = new DataView(buf);
       dv.setUint8(0, op);
       dv.setInt16(1, args[0] | 0, true);
+      return new Uint8Array(buf);
+    }
+    case Op.DRIVE: {
+      // % signés bornés côté émetteur : le robot ne relit pas les intentions, il
+      // les exécute. Le TTL voyage en pas de 10 ms (0 = défaut du firmware).
+      const pct = (x: number) => Math.max(-100, Math.min(100, Math.round(x || 0)));
+      const buf = new ArrayBuffer(4);
+      const dv = new DataView(buf);
+      dv.setUint8(0, op);
+      dv.setInt8(1, pct(args[0]));
+      dv.setInt8(2, pct(args[1]));
+      dv.setUint8(3, Math.max(0, Math.min(255, Math.round((args[2] || 0) / 10))));
       return new Uint8Array(buf);
     }
     case Op.LOOK: {

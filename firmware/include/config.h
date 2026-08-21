@@ -403,11 +403,25 @@ constexpr float DRIVER_MUTE_MS = 60.0f;
 // Or la consigne passe par zero EXACTEMENT au point d'equilibre — d'ou le symptome
 // « il tient en mouvement puis lache a la verticale », qui a resiste des mois.
 //
-// 4 mm/s = 48 pas/s. Ce n'est PAS un reglage de latence : a 48 pas/s un ordre de file
-// dure encore 20 ms, autant que sans plancher. Il suffit d'eviter l'etat degenere,
-// rien de plus — d'ou l'inutilite de monter (F 16 tient aussi, mais vibre).
-// Valide au banc le 23/08 : premier etat ou le robot ne tombe plus.
-constexpr float SPEED_FLOOR_MM_S = 4.0f;
+// Ce n'est PAS un reglage de latence : a 48 pas/s (F 4) un ordre de file dure encore
+// 20 ms, autant que sans plancher. Il suffit d'eviter l'etat degenere, rien de plus.
+// Valide au banc le 23/08 a 4 mm/s : premier etat ou le robot ne tombe plus.
+//
+// REVISE 4 -> 8 a la session suivante. F 4 n'a PAS reproduit son efficacite ce
+// jour-la (chute au point d'equilibre, comme avant le correctif) ; F 8 a tenu, et
+// c'est le reglage du run de recette : 10 min sans une seule chute, en statique ET
+// en teleguidage. On ne sait pas encore pourquoi 4 a suffi un jour et pas l'autre
+// (temperature, charge accu, usure de la zone morte) — d'ou une marge x2 plutot
+// qu'un retour a la valeur juste. Monter davantage reste inutile et vibre (F 16).
+//
+// ⚠️ SI LE PLANCHER SEMBLE INOPERANT : ce n'est probablement pas sa valeur. Une fois
+// la rampe ENLISEE, le plancher ne l'en sort pas — il l'entretient meme, parce qu'il
+// epingle la consigne a une valeur CONSTANTE et que `emit` (Balance.cpp) saute
+// l'envoi quand `out == sentSps`. Plus rien ne repart vers le driver. Seuls un
+// `setMotorsEnabled(false)` (donc `m`/`m`, ou une chute) ou le verrou d'inversion
+// debloquent. Le detecteur « driver muet » ne le voit pas : il est bride a
+// DRIVER_MUTE_MIN_SPS = 600 pas/s, tres au-dessus de la zone du plancher (F 8 = 97).
+constexpr float SPEED_FLOOR_MM_S = 8.0f;
 
 constexpr float SWAY_HZ = 1.5f;
 
@@ -425,6 +439,48 @@ constexpr uint8_t DITHER_PERIOD_TICKS = 4;
 // Vitesses des déplacements pilotés (FORWARD/BACKWARD/TURN).
 constexpr float CRUISE_SPEED_MM_S = 180.0f;    // vitesse de croisière d'un déplacement
 constexpr float TURN_RATE_DEG_S = 90.0f;       // vitesse de rotation sur place
+
+// ─────────────────────────────────────────────────────────────────────────
+//  TÉLÉGUIDAGE (OP_DRIVE / console `u`) — cf. protocol.h
+// ─────────────────────────────────────────────────────────────────────────
+// Rappel d'architecture, et c'est le point important : les deux axes N'ENTRENT
+// PAS au même endroit de la chaîne (même choix que le B-Robot, cf. son .ino) :
+//   • la VITESSE est la CONSIGNE de la boucle externe (`cmdSpeed`), qui la
+//     convertit en angle de consigne. Le robot « veut avancer » ⇒ il se penche.
+//     Non négociable : pousser directement les roues ferait tomber le robot en
+//     arrière (c'est le propre du pendule inversé).
+//   • la DIRECTION est injectée DIRECTEMENT sur le différentiel des roues,
+//     après toute la boucle : pivoter ne remet pas l'équilibre en jeu.
+//
+// Plafonds volontairement DOUX pour la première mise en main (le B-Robot est à
+// ±1180 mm/s en mode normal et ±1700 en mode PRO — c'est une fusée). À monter à
+// la console une fois la conduite prise en main : `P` et `R`.
+constexpr float TELEOP_MAX_SPEED_MM_S = 300.0f; // fond de course avant/arrière
+constexpr float TELEOP_MAX_TURN_DEG_S = 120.0f; // fond de course rotation
+
+// Homme mort : durée de validité d'une commande de téléguidage non rafraîchie.
+// 500 ms = 5 rafraîchissements manqués à 10 Hz. Assez long pour absorber une
+// hoquet BLE, assez court pour que le robot ne traverse pas la pièce si le lien
+// tombe (à 300 mm/s : 15 cm).
+constexpr uint32_t TELEOP_TTL_MS = 500;
+
+// Expo sur la DIRECTION (recette B-Robot, verbatim de son .ino) :
+//   steer = (s² + 0.5·s) · max      pour s ∈ [0, 1]
+// Une manette n'a pas de cran au centre : sans expo, le moindre appui de travers
+// fait pivoter. La partie quadratique écrase le milieu de course (à mi-course on
+// obtient 0.375 au lieu de 0.5) et laisse le fond de course intact.
+// ⚠️ Chez lui la course du fader vaut ±0.5, donc son fond de course ne rend que
+// la MOITIÉ de MAX_STEERING. Ici s est normalisé à ±1, la formule rend donc bien
+// 100 % en butée — ne pas comparer les constantes des deux projets de front.
+constexpr float TELEOP_STEER_EXPO = 0.5f; // poids de la partie linéaire
+
+// Inclinaison MAXIMALE que la boucle externe a le droit de demander pour se
+// déplacer. C'est LE plafond d'accélération du robot : plus il peut se pencher,
+// plus il peut accélérer — et plus une erreur de conduite coûte cher.
+// B-Robot : 14° en mode normal, 26° en mode PRO (max recommandé 32°).
+// Réglable en direct (console `A`) : c'est le premier paramètre à monter si le
+// robot « refuse » d'avancer, et le premier à baisser s'il part en avant.
+constexpr float MAX_LEAN_DEG = 12.0f;
 
 // ─────────────────────────────────────────────────────────────────────────
 //  ORDONNANCEMENT (cœurs FreeRTOS)
