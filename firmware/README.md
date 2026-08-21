@@ -33,7 +33,8 @@ En modifier un ici (`include/protocol.h`) impose de le répercuter là-bas.
 | `include/protocol.h` | opcodes, UUIDs BLE, format télémétrie |
 | `src/Balance.*` | équilibre (MPU6050 → PID cascadé → steppers) + gestes |
 | `src/BleBridge.*` | serveur NimBLE (commandes + notifications) |
-| `src/Tuning.*` | console série de réglage en live (gains, axe MPU, offset, NVS) |
+| `src/Tuning.*` | console de réglage en live (gains, axe MPU, offset, NVS) |
+| `src/Console.*` | la même console servie sur **série ET BLE** (réglage sans câble) |
 | `src/Sonar.h` | HC-SR04 non bloquant (cœur 0) |
 | `src/main.cpp` | init matériel + tâches FreeRTOS |
 
@@ -66,10 +67,21 @@ téléchargées automatiquement au premier build.
 
 ## Réglage (tuning) de l'équilibre
 
-Le réglage se fait **en live au moniteur série** (115200), sans recompiler :
-la console de tuning (`src/Tuning.*`) permet d'ajuster les gains, l'axe du MPU
-et l'offset à chaud, puis de **sauver en NVS** (rechargé au boot). Taper `?`
-pour l'aide complète. Commandes principales :
+Le réglage se fait **en live**, sans recompiler : la console de tuning
+(`src/Tuning.*`) permet d'ajuster les gains, l'axe du MPU et l'offset à chaud,
+puis de **sauver en NVS** (rechargé au boot). Taper `?` pour l'aide complète.
+
+Elle est servie **sur deux transports à la fois** (`src/Console.*`), avec des
+commandes strictement identiques :
+
+- **moniteur série** 115200 — voit le boot, indispensable pour diagnostiquer un
+  robot qui ne démarre pas ;
+- **BLE** — même console dans `tuning.html` (bouton « Connecter en Bluetooth »).
+  **C'est le mode de réglage réel** : sur un pendule inversé, le câble USB
+  retient le robot et fausse tous les essais d'équilibre. Voir
+  [docs/TUNING.md](../docs/TUNING.md) pour la procédure et les limites.
+
+Commandes principales :
 
 | Commande | Effet |
 |---|---|

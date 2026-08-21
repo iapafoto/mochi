@@ -8,6 +8,109 @@
 > **un terme d'amortissement `θ̇` direct** dans la commande de vitesse (voir Diff n°1). Le reste
 > tient au réglage et au montage physique.
 
+---
+
+# ⭐ Addendum 21/08 — comparaison avec **B-ROBOT ESP32** (le vrai coupable)
+
+> Source lue ligne à ligne : [bluino/esp32_wifi_balancing_robot](https://github.com/bluino/esp32_wifi_balancing_robot)
+> (le port ESP32 de B-ROBOT EVO2 décrit sur [cet Instructables](https://www.instructables.com/DIY-ESP32-Wifi-Self-Balancing-Robot-B-Robot-ESP32-/)).
+> Mêmes composants que Mochi : ESP32 + MPU6050 + 2× A4988 + NEMA 17.
+>
+> **Conclusion : la rampe d'accélération n'était plus le problème. Il manquait le terme intégral.**
+
+## A1. Le terme dominant du B-Robot, mis à zéro chez nous
+
+Le B-Robot sort une **accélération** qu'il intègre :
+
+```c
+control_output += stabilityPDControl(dt, angle_adjusted, target_angle, Kp, Kd);
+// avec  output = Kp*error + (Kd*Δsetpoint − Kd*(input − input_préc)) / DT
+```
+
+En développant la somme (`Kp=0.32`, `Kd=0.050`, `DT=0.01 s`), la vitesse roue commandée vaut :
+
+```
+v = (Kd/DT)·θ + (Kp/DT)·∫θ  =  5·θ + 32·∫θ      [unités B-Robot]
+                            ≈ 21.6·θ + 138·∫θ   [mm/s, θ en degrés]
+```
+
+**Le terme intégral est six fois plus gros que le proportionnel**, avec une constante de temps
+d'action de `1/6.4 = 0.16 s`. Ce n'est pas une finition, c'est le cœur de sa commande.
+
+Mochi avant le 21/08 : `v = 40·θ + 0·∫θ + 0.3·θ̇`, et **aucun autre intégrateur actif**
+(`KP_POS=0`, `AUTO_TRIM_GAIN=0`, `KI_SPEED=0.003` soit ~8× moins que le B-Robot).
+Résultat : rien dans toute la cascade ne pouvait annuler une erreur statique sur θ₀.
+Un zéro faux de 0.5° suffisait à commander 17 mm/s en permanence → dérive → chute.
+**Signature exacte du « il corrige, il a l'air vivant, mais il ne tient jamais ».**
+
+> ⚠️ Le raisonnement qui avait conduit à `KI_ANGLE = 0` (« éviter la bagarre d'intégrateurs »,
+> §1 ci-dessous) était faux : en forme vitesse, `Ki·∫θ` n'est pas un intégrateur concurrent,
+> c'est **l'équivalent exact du terme proportionnel de la forme accélération**. En le
+> neutralisant on n'avait pas supprimé un doublon, on avait supprimé le terme principal.
+
+## A2. Tableau comparatif chiffré
+
+Conversions B-Robot : 1 unité de `control_output` = 50 pas/s = ~4.3 mm/s (roue 90 mm, 1/16).
+
+| | B-Robot ESP32 | Mochi (avant 21/08) | Mochi (après) |
+|---|---|---|---|
+| Terme en `θ` | 21.6 mm/s/° | 40 | 33.5 |
+| Terme en `∫θ` | **138 mm/s/(°·s)** | **0** | **200** |
+| Terme en `θ̇` | 0 (aucun) | 0.3 | 0.1 |
+| Ratio Ki/Kp | 6.4 s⁻¹ | — | 6.0 s⁻¹ |
+| Vitesse roue max | **~2160 mm/s** | 700 | 1400 |
+| Accél. max roue | ~6 m/s² (`MAX_ACCEL 14`) | ~16.5 m/s² | ~14 m/s² |
+| Micro-pas | **1/8** | 1/16 | 1/16 |
+| Boucle | 100 Hz, `dt` mesuré, sur data-ready IMU | 200 Hz, `dt` fixe | idem |
+| DLPF matériel | **10 Hz** | 44 Hz | 44 Hz (réglable `D`) |
+| Filtre complémentaire | 0.99 @100 Hz ⇒ **τ ≈ 1 s** | 0.998 @200 Hz ⇒ τ ≈ 2.5 s | idem (réglable `y`) |
+| Biais gyro | **corrigé en continu, même en équilibre** | seulement moteurs coupés | **en continu** |
+| Vitesse injectée dans la boucle externe | `v_roue + k·θ̇`, filtrée | `v_roue` brute | idem, `T` pour activer |
+| Génération des pas | période de timer écrite **directement** | FastAccelStepper (file + rampe) | idem |
+| Porte de réengagement | aucune (moteurs ON dès \|θ\| < 74°) | \|θ\|<30° **et** \|θ̇\|<60 °/s | \|θ\|<35° et \|θ̇\|<150 °/s |
+| Coupure sur distance | aucune | 1000 mm | 2500 mm |
+
+## A3. Ce qui a été changé (et ce qui ne l'a pas été)
+
+Appliqué :
+
+1. `KI_ANGLE = 200` (≈ 6·Kp), `ANGLE_INTEG_LIMIT` 20 → 3 deg·s, + anti-windup conditionnel
+   quand la roue est en butée.
+2. `MAX_WHEEL_SPEED_MM_S` 700 → 1400, réglable en direct (console `V`).
+3. Suivi **permanent** du biais gyro (`GYRO_BIAS_TRACK_*`), copie des constantes du B-Robot :
+   clamp ±0.15 °/s autour de l'estimation, α = 2.5e-4 ⇒ le biais ne bouge que de
+   ~0.0075 °/s par seconde. Trop lent pour manger une inclinaison réelle, assez rapide
+   pour suivre la dérive thermique documentée (+1..+17 °/s).
+4. Estimation `v_robot = v_roue + k·θ̇` + passe-bas, **désactivée par défaut** (`T 0`) :
+   à Kp=33.5 et `v`=0.017, `k=1` ajouterait 0.57 mm/s/(°/s), soit 6× le `e` actuel.
+   À activer seulement après avoir vu le robot tenir.
+5. DLPF matériel réglable en direct (console `D`), pour tester le 10 Hz du B-Robot.
+6. Portes de sécurité relâchées (voir tableau) : elles empêchaient de constater un
+   rattrapage réussi.
+7. `s 0` efface désormais le θ₀ auto-trouvé (un `trim=+0.64` fantôme traînait alors que
+   le mécanisme s'affichait « off »).
+
+**Pas** appliqué, à garder en réserve :
+
+- **1/8 de pas.** Demande de déplacer les cavaliers du CNC shield ET `MICROSTEPS=8`.
+  À faire si les moteurs décrochent en montant `V` : même vitesse pour deux fois moins de pas/s.
+- **Écriture directe de la période de timer** au lieu de FastAccelStepper. La file de
+  commandes de FastAccelStepper ajoute une latence que la boucle ne modélise pas — du temps
+  mort pur, ce qui tue une boucle d'équilibre plus sûrement qu'un gain mal réglé.
+  Non chiffrée faute de mesure : c'est le point à instrumenter si tout le reste ne suffit pas.
+
+## A4. Le facteur non logiciel
+
+Deux robots « à composants identiques » ne se comportent pas pareil si :
+
+- **la hauteur du centre de masse diffère.** Le B-ROBOT est haut (~30 cm), batterie en haut :
+  temps de chute lent, facile à rattraper. Un châssis court avec la masse près de l'essieu tombe
+  beaucoup plus vite et exige une bande passante très supérieure.
+- **il y a du jeu entre l'arbre NEMA 17 et la roue.** Le moindre backlash crée une zone morte
+  qu'aucun gain ne traverse.
+
+---
+
 ## 0. Ce qui est identique (rien à « copier » côté structure)
 
 | | Mochi | rekomerio |

@@ -1,15 +1,27 @@
 // dashboard.ts — banc de tuning Mochi : visualise EN DIRECT ce que le robot croit
 // mesurer, pour le confronter à ce qu'on voit physiquement.
 //
-// Le firmware émet déjà tout sur la console série (Tuning.cpp, 10 Hz) :
+// Le firmware émet déjà tout sur la console de tuning (Tuning.cpp, 10 Hz) :
 //   [tune] pitch=  +1.87 gy=   -9.3 (X= +11.08 Y=  -2.68) tgt= -0.78 v=  -13mm/s x= +111mm glt=0 BAL
-// Chrome sait ouvrir un port série (Web Serial) : aucun pont n'est nécessaire, la
-// page parle directement à l'ESP32.
 //
-// ⚠️ Le port est EXCLUSIF : fermer les scripts PowerShell de capture avant de
-// connecter ici (et inversement), sinon l'ouverture échoue.
+// DEUX TRANSPORTS, un seul protocole. Le firmware sert la même console texte sur
+// le port série ET sur BLE (cf. firmware/src/Console.h) — tout ce qui suit le
+// point d'entrée `handleLine` / `send` ignore lequel est branché :
+//   - USB / Web Serial : marche toujours, voit le boot, mais le câble TIRE sur le
+//     robot et fausse les essais d'équilibre ;
+//   - Bluetooth / Web Bluetooth : robot libre, c'est le mode de réglage réel.
+//     Exige HTTPS (`npm run dev:https`) ou localhost, et un clic utilisateur.
+//
+// ⚠️ Le port série est EXCLUSIF : fermer les scripts PowerShell de capture avant
+// de connecter ici (et inversement), sinon l'ouverture échoue.
 
 import './dashboard.css';
+import {
+  MOCHI_DEVICE_NAME,
+  MOCHI_SERVICE_UUID,
+  MOCHI_CONSOLE_RX_UUID,
+  MOCHI_CONSOLE_TX_UUID,
+} from '../robot/bleProfile';
 
 const BAUD = 115200;
 // Conditions de ré-engagement — doivent rester alignées sur config.h
@@ -75,10 +87,31 @@ let keepReading = false;
 let rxBytes = 0;
 let lastTeleMs = 0;
 
+// Transport actif. Tout le reste du fichier passe par `send()` et `handleLine()`
+// et n'a pas à savoir lequel des deux est branché.
+type LinkKind = 'serial' | 'ble';
+let linkKind: LinkKind | null = null;
+let bleWrite: ((bytes: Uint8Array) => Promise<void>) | null = null;
+
 // ─────────────────────────────────────────────────────────────────────────
-//  Connexion série
+//  Découpage du flux en lignes — commun aux deux transports
 // ─────────────────────────────────────────────────────────────────────────
-async function connect() {
+// Ni le série ni le BLE ne garantissent qu'un morceau reçu = une ligne : le BLE
+// fragmente selon le MTU, le série selon les tampons USB. On accumule et on ne
+// traite que ce qui est terminé par un `\n`.
+let lineBuf = '';
+function feedChunk(text: string) {
+  rxBytes += text.length;
+  lineBuf += text;
+  const lines = lineBuf.split(/\r?\n/);
+  lineBuf = lines.pop() ?? '';
+  for (const line of lines) handleLine(line);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  Connexion série (USB)
+// ─────────────────────────────────────────────────────────────────────────
+async function connectSerial() {
   const serial = (navigator as any).serial;
   if (!serial) {
     logLine('❌ Web Serial indisponible. Utiliser Chrome/Edge, en http://localhost ou https.');
@@ -101,10 +134,89 @@ async function connect() {
     logLine('⚠️ setSignals refusé (' + (e as Error).message + ') — l’ESP32 peut rester en reset.');
   }
   writer = port.writable.getWriter();
-  rxBytes = 0;
-  setLink(true);
+  linkKind = 'serial';
+  afterConnect();
   keepReading = true;
   readLoop();
+}
+
+async function readLoop() {
+  const decoder = new TextDecoderStream();
+  port.readable.pipeTo(decoder.writable).catch(() => {});
+  const reader = decoder.readable.getReader();
+  while (keepReading) {
+    let res;
+    try { res = await reader.read(); } catch { break; }
+    if (res.done) break;
+    feedChunk(res.value);
+  }
+  linkKind = null;
+  setLink(false);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  Connexion Bluetooth (Web Bluetooth) — le mode de réglage réel
+// ─────────────────────────────────────────────────────────────────────────
+// Même console texte, transportée par deux caractéristiques GATT (cf.
+// bleProfile.ts). Le firmware ne bufferise QUE si un client est abonné aux
+// notifications : on s'abonne donc avant d'envoyer quoi que ce soit.
+async function connectBle() {
+  const bt = (navigator as any).bluetooth;
+  if (!bt) {
+    logLine('❌ Web Bluetooth indisponible.\n' +
+            '   → Chrome/Edge, et une origine sécurisée : `npm run dev:https` ou http://localhost.');
+    return;
+  }
+  let device: any;
+  try {
+    device = await bt.requestDevice({
+      filters: [{ name: MOCHI_DEVICE_NAME }],
+      optionalServices: [MOCHI_SERVICE_UUID],
+    });
+  } catch (e) {
+    // Inclut le cas « l'utilisateur ferme le sélecteur » : pas une erreur.
+    logLine('ℹ️ sélection annulée ou robot introuvable : ' + (e as Error).message);
+    return;
+  }
+
+  try {
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(MOCHI_SERVICE_UUID);
+    const tx = await svc.getCharacteristic(MOCHI_CONSOLE_TX_UUID);
+    const rx = await svc.getCharacteristic(MOCHI_CONSOLE_RX_UUID);
+
+    const dec = new TextDecoder();
+    tx.addEventListener('characteristicvaluechanged', (ev: any) => {
+      feedChunk(dec.decode(ev.target.value));
+    });
+    await tx.startNotifications();
+
+    // `writeValueWithoutResponse` n'existe pas sur les Chrome anciens.
+    bleWrite = (bytes) =>
+      rx.writeValueWithoutResponse ? rx.writeValueWithoutResponse(bytes) : rx.writeValue(bytes);
+
+    device.addEventListener('gattserverdisconnected', () => {
+      bleWrite = null;
+      linkKind = null;
+      setLink(false);
+      logLine('⚠️ Bluetooth déconnecté (hors de portée, ou robot éteint).');
+    });
+  } catch (e) {
+    logLine('❌ connexion BLE impossible : ' + (e as Error).message +
+            '\n   (firmware à jour ? la console BLE date de la version avec Console.h)');
+    try { device.gatt?.disconnect(); } catch { /* rien à sauver */ }
+    return;
+  }
+
+  linkKind = 'ble';
+  afterConnect();
+}
+
+// Amorçage commun aux deux transports.
+function afterConnect() {
+  rxBytes = 0;
+  lineBuf = '';
+  setLink(true);
 
   // `g` n'est pas une bascule : sans risque, et il peuple les réglages.
   window.setTimeout(() => send('g'), 400);
@@ -114,31 +226,16 @@ async function connect() {
   window.setTimeout(() => {
     if (last) return;
     if (rxBytes === 0) {
-      logLine('❌ 0 octet reçu. Le port est ouvert mais la carte ne parle pas :\n' +
-              '   → mauvais port COM, ou ESP32 tenu en reset. Débranche/rebranche l’USB.');
+      logLine(linkKind === 'ble'
+        ? '❌ 0 octet reçu en BLE. Le lien est ouvert mais rien ne remonte :\n' +
+          '   → firmware trop ancien (pas de console BLE), ou abonnement refusé.'
+        : '❌ 0 octet reçu. Le port est ouvert mais la carte ne parle pas :\n' +
+          '   → mauvais port COM, ou ESP32 tenu en reset. Débranche/rebranche l’USB.');
     } else {
       logLine('ℹ️ La carte parle mais n’envoie pas de télémétrie : le stream est ÉTEINT.\n' +
               '   → clique « t — stream » pour l’allumer.');
     }
   }, 1500);
-}
-
-async function readLoop() {
-  const decoder = new TextDecoderStream();
-  port.readable.pipeTo(decoder.writable).catch(() => {});
-  const reader = decoder.readable.getReader();
-  let buf = '';
-  while (keepReading) {
-    let res;
-    try { res = await reader.read(); } catch { break; }
-    if (res.done) break;
-    rxBytes += res.value.length;
-    buf += res.value;
-    const lines = buf.split(/\r?\n/);
-    buf = lines.pop() ?? '';
-    for (const line of lines) handleLine(line);
-  }
-  setLink(false);
 }
 
 function handleLine(line: string) {
@@ -157,11 +254,29 @@ function handleLine(line: string) {
 }
 
 async function send(cmd: string) {
-  if (!writer) { logLine('⚠️ pas connecté'); return; }
-  await writer.write(new TextEncoder().encode(cmd + '\n'));
+  const bytes = new TextEncoder().encode(cmd + '\n');
+  if (linkKind === 'ble' && bleWrite) {
+    try {
+      await bleWrite(bytes);
+    } catch (e) {
+      logLine('⚠️ envoi BLE échoué : ' + (e as Error).message);
+      return;
+    }
+  } else if (linkKind === 'serial' && writer) {
+    await writer.write(bytes);
+  } else {
+    logLine('⚠️ pas connecté');
+    return;
+  }
   logLine('> ' + cmd);
-  // `z` est la seule commande de réglage qui n'imprime pas printState : relire.
-  if (cmd.trim() === 'z') window.setTimeout(() => send('g'), 200);
+  // Ces commandes répondent par leur propre message, pas par un printState : sans
+  // relecture, le panneau afficherait encore l'ancienne valeur. La casse compte côté
+  // firmware (`g` = lecture d'état vs `G` = échelle gyro, `z` = zéro ici vs `Z` =
+  // adopter le zéro suggéré par l'intégrale).
+  const head = cmd.trim()[0];
+  if ('zynGZVTDHFBx'.includes(head)) {
+    window.setTimeout(() => send('g'), 200);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -172,16 +287,32 @@ async function send(cmd: string) {
 // divergerait. `z` est la seule commande qui ne l'imprime pas → on relit après.
 type Gain = {
   cmd: string; label: string; hint: string;
-  step: number; dec: number; min: number;
+  step: number; dec: number; min: number; max?: number;
 };
 const GAINS: Gain[] = [
-  { cmd: 'd', label: 'Nervosité',        hint: 'angle → vitesse (Kp) : la raideur, le rattrapage immédiat', step: 2, dec: 1, min: 0 },
-  { cmd: 'p', label: 'Insistance',       hint: '∫angle → vitesse (Ki) : agit comme un intégral',   step: 1,      dec: 1, min: 0 },
-  { cmd: 'e', label: 'Amortissement',    hint: 'gyro θ̇ → vitesse (Kd) : freine le mouvement (terme ajouté)', step: 1, dec: 1, min: 0 },
+  { cmd: 'd', label: 'Nervosité',        hint: 'angle → vitesse (Kp) : la raideur, le rattrapage immédiat', step: 1, dec: 1, min: 0 },
+  { cmd: 'p', label: 'Insistance',       hint: '∫angle → vitesse (Ki) : TERME DOMINANT (~6.4×Kp) — à 0 le robot part et tombe', step: 5, dec: 1, min: 0 },
+  { cmd: 'e', label: 'Amortissement',    hint: 'gyro θ̇ → vitesse (Kd) : freine le mouvement (terme ajouté)', step: 0.05, dec: 2, min: 0 },
   { cmd: 'v', label: 'Tenue de vitesse', hint: 'vitesse → angle de consigne (butée ±12°)',         step: 0.005,  dec: 4, min: 0 },
   { cmd: 'i', label: 'Anti-dérive',      hint: 'intégral lent de la boucle vitesse',               step: 0.0005, dec: 5, min: 0 },
   { cmd: 'q', label: 'Ancre position',   hint: 'rappel vers le point de départ (borné 100 mm/s)',  step: 0.05,   dec: 2, min: 0 },
+  { cmd: 's', label: 'Auto-zéro',        hint: 'trim auto du point d\'équilibre (Brokking) : sol plat, sans contact', step: 0.0005, dec: 4, min: 0 },
   { cmd: 'o', label: 'Zéro',             hint: 'angle du point d\'équilibre (négatif possible)',   step: 0.1,    dec: 2, min: -90 },
+  // Les deux réglages qui PLAFONNENT la nervosité — ils ne sont pas des gains du
+  // PID, mais c'est souvent eux qui bloquent, pas les gains (cf. docs/TUNING.md).
+  { cmd: 'y', label: 'Confiance gyro',   hint: 'filtre : haut = insensible aux secousses de roue, mais laisse dériver', step: 0.001, dec: 4, min: 0.9, max: 0.9999 },
+  { cmd: 'n', label: 'Accél. driver',    hint: 'rampe steps/s² : trop haut = pas sautés, trop bas = mou', step: 50000, dec: 0, min: 50000, max: 1000000 },
+  { cmd: 'G', label: 'Échelle gyro',     hint: 'clones MPU6050 : compare y 0.95 (accéléro, fiable) et y 0.9999 (gyro)', step: 0.05, dec: 3, min: 0.1, max: 10 },
+  // Ajoutés le 21/08 avec la comparaison B-Robot (cf. docs/COMPARAISON.md).
+  { cmd: 'V', label: 'Vitesse roue max', hint: 'autorité de rattrapage mm/s (B-Robot ~2160) : monter tant que les moteurs ne perdent pas de pas', step: 100, dec: 0, min: 100, max: 3000 },
+  { cmd: 'T', label: 'Vitesse ⟵ gyro',   hint: 'v_robot = v_roue + k·θ̇ (0 = off, B-Robot ~1) : amortit en plus de `e`', step: 0.1, dec: 2, min: 0, max: 5 },
+  { cmd: 'D', label: 'DLPF MPU',         hint: 'filtre matériel : 3 = 44 Hz, 4 = 21 Hz, 5 = 10 Hz (réglage B-Robot)', step: 1, dec: 0, min: 0, max: 6 },
+  // Ajoutés le 23/08 — la cause racine était côté ACTIONNEUR, pas côté gains :
+  // FastAccelStepper reste bloqué quand la consigne roue passe par zéro (il doit
+  // décélérer depuis une vitesse déjà nulle et ne finit jamais). Cf. docs/TUNING.md.
+  { cmd: 'F', label: "Plancher vitesse", hint: "mm/s : empêche la consigne roue de s'immobiliser au point zéro. LE correctif du « il tombe à la verticale » — 4 suffit, plus haut ne fait qu'ajouter de la vibration", step: 1, dec: 0, min: 0, max: 100 },
+  { cmd: 'B', label: "Balancier",        hint: "degrés : oscillation volontaire de la consigne d'angle à 1,5 Hz. Même exigence que F, exprimée en amont (B ≈ F/Kp)", step: 0.1, dec: 2, min: 0, max: 5 },
+  { cmd: 'H', label: "Dither",           hint: "mm/s : vibration de la consigne contre le JEU mécanique. Vérifier le jeu à la main avant de s'en servir", step: 5, dec: 0, min: 0, max: 100 },
 ];
 
 const gainVal: Record<string, number> = {};
@@ -189,12 +320,30 @@ const gainVal: Record<string, number> = {};
 // printState : "[tune] p=0.000 d=66.000 v=0.0250 i=0.00100 q=0.400 o=+0.81 e=0.000 axe=…"
 // `e=` (amortissement Kd) est en fin de bloc → optionnel dans le regex (compat firmware ancien).
 const RE_GAINS = /(?:^|\s)p=([\d.]+)\s+d=([\d.]+)\s+v=([\d.]+)\s+i=([\d.]+)\s+q=([\d.]+)\s+o=([-+][\d.]+)(?:\s+e=([\d.]+))?/;
+// `s=`, `y=` et `acc=` sont plus loin dans la ligne printState (bloc télémétrie
+// après le `|`) → captés à part, et tolérants à un firmware plus ancien.
+const RE_TAIL: Record<string, RegExp> = {
+  s: /\ss=([\d.]+)/,
+  y: /\sy=([\d.]+)/,
+  n: /\sacc=([\d.]+)/, // la commande est `n`, le champ imprimé s'appelle `acc`
+  G: /\sgs=([\d.]+)/,  // échelle gyro (clones MPU6050)
+  V: /\sV=([\d.]+)/,   // vitesse roue max (autorité de rattrapage)
+  T: /\sT=([\d.]+)/,   // correction v_robot ← gyro
+  D: /\sD=(\d+)/,      // DLPF matériel du MPU
+  H: /\sH=([\d.]+)/,   // dither (jeu mécanique)
+  F: /\sF=([\d.]+)/,   // plancher de vitesse roue
+  B: /\sB=([\d.]+)/,   // balancier volontaire
+};
 
 function parseGains(line: string): void {
   const m = line.match(RE_GAINS);
   if (!m) return;
   ['p', 'd', 'v', 'i', 'q', 'o'].forEach((k, i) => { gainVal[k] = parseFloat(m[i + 1]); });
   if (m[7] !== undefined) gainVal['e'] = parseFloat(m[7]);
+  for (const [k, re] of Object.entries(RE_TAIL)) {
+    const mt = line.match(re);
+    if (mt) gainVal[k] = parseFloat(mt[1]);
+  }
   drawGains();
 }
 
@@ -203,18 +352,21 @@ function drawGains() {
     const v = gainVal[g.cmd];
     $('g-' + g.cmd).textContent = v === undefined ? '—' : v.toFixed(g.dec);
   }
-  // Dans cette architecture c'est le RATIO d/p qui fait le comportement,
-  // pas les valeurs absolues (cf. docs/TUNING.md).
+  // Le ratio qui décrit le comportement est Ki/Kp = `p`/`d` : c'est l'inverse de
+  // la constante de temps de l'action intégrale (s⁻¹). Le B-Robot tourne à 6.4 s⁻¹
+  // (soit 0.16 s) — c'est la cible de référence, cf. docs/COMPARAISON.md §1.
   const { d, p } = gainVal;
   $('ratio').textContent =
-    d === undefined || !p ? '—' : 'ratio d/p = ' + (d / p).toFixed(1);
+    p === undefined || !d
+      ? '—'
+      : `Ki/Kp = ${(p / d).toFixed(1)} s⁻¹ (B-Robot : 6.4)`;
 }
 
 function bump(cmd: string, dir: number) {
   const g = GAINS.find((x) => x.cmd === cmd)!;
   const cur = gainVal[cmd];
   if (cur === undefined) { logLine('⚠️ valeurs inconnues — clique « Relire »'); return; }
-  const next = Math.max(g.min, cur + dir * g.step);
+  const next = Math.min(g.max ?? Infinity, Math.max(g.min, cur + dir * g.step));
   send(g.cmd + ' ' + next.toFixed(g.dec)); // la réponse printState remet l'UI à jour
 }
 
@@ -466,9 +618,11 @@ const fmt = (n: number, d: number) => (n >= 0 ? '+' : '') + n.toFixed(d);
 
 function setLink(on: boolean) {
   const el = $('link');
-  el.textContent = on ? 'connecté' : 'déconnecté';
+  el.textContent = on ? (linkKind === 'ble' ? 'connecté (BLE)' : 'connecté (USB)') : 'déconnecté';
   el.className = 'badge ' + (on ? 'ok' : 'off');
+  // Un seul transport à la fois : les deux boutons se verrouillent ensemble.
   ($('connect') as HTMLButtonElement).disabled = on;
+  ($('connect-ble') as HTMLButtonElement).disabled = on;
 }
 
 function logLine(s: string) {
@@ -480,7 +634,7 @@ function logLine(s: string) {
 // Santé du flux : c'est LE témoin qui dit où ça coince quand rien ne bouge.
 function drawRx() {
   const el = $('rx');
-  if (!port) { el.textContent = 'pas de port'; el.className = 'badge off'; return; }
+  if (!linkKind) { el.textContent = 'pas de lien'; el.className = 'badge off'; return; }
   const age = (performance.now() - lastTeleMs) / 1000;
   if (last && age < 1.5) {
     el.textContent = 'flux ok';
@@ -503,7 +657,8 @@ function frame() {
 }
 
 // --- Câblage UI ---
-$('connect').addEventListener('click', connect);
+$('connect').addEventListener('click', connectSerial);
+$('connect-ble').addEventListener('click', connectBle);
 $('cmdform').addEventListener('submit', (e) => {
   e.preventDefault();
   const input = $<HTMLInputElement>('cmd');

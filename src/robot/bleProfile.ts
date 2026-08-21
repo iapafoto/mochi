@@ -24,6 +24,21 @@ export const MOCHI_COMMAND_UUID = '6d6f6368-c0de-4d43-9a11-000000000002';
  */
 export const MOCHI_TELEMETRY_UUID = '6d6f6368-c0de-4d43-9a11-000000000003';
 
+/**
+ * Console de tuning déportée (utilisée par src/tuning/dashboard.ts), RX = app → robot.
+ * Payload = texte UTF-8 : une ligne de commande terminée par `\n` (`d 66\n`).
+ * C'est le protocole du moniteur série, transporté par BLE pour régler
+ * l'équilibre sans câble USB (le câble tire sur le robot et fausse les essais).
+ */
+export const MOCHI_CONSOLE_RX_UUID = '6d6f6368-c0de-4d43-9a11-000000000004';
+
+/**
+ * Console de tuning déportée, TX = robot → app, notifications.
+ * Payload = texte UTF-8 brut, **fragmenté** : un bloc ne contient pas forcément
+ * une ligne entière. Le récepteur doit accumuler et découper sur `\n`.
+ */
+export const MOCHI_CONSOLE_TX_UUID = '6d6f6368-c0de-4d43-9a11-000000000005';
+
 /** Nom BLE annoncé par l'ESP32 (advertising). */
 export const MOCHI_DEVICE_NAME = 'Mochi';
 

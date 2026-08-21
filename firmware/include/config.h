@@ -56,7 +56,16 @@ constexpr bool INVERT_RIGHT = true;
 //  MÉCANIQUE (roues Gotronic 84×24 mm + NEMA 17 1.8°, A4988 en 1/16)
 // ─────────────────────────────────────────────────────────────────────────
 constexpr int MOTOR_FULL_STEPS = 200;     // 1.8° → 200 pas/tour
-constexpr int MICROSTEPS = 16;            // jumpers MS1/MS2/MS3 tous à HIGH
+// MICROSTEPS : 16 = 3 cavaliers par socket sur le CNC shield ; 8 = seulement MS1 et
+// MS2 (retirer le cavalier MS3, le plus proche du bornier d'alim). ⚠️ Passer à 8 est
+// LE remède aux pas perdus : même vitesse roue pour deux fois moins de pas/s, donc
+// bien plus loin du décrochage — c'est le réglage livré du B-Robot ESP32.
+// Contrepartie : résolution deux fois plus grossière (0,15 mm de roue par pas au lieu
+// de 0,08), sans importance pour l'équilibre. Tout le reste (STEPS_PER_MM, accél.,
+// vitesses) se recalcule automatiquement à partir d'ici.
+// ⚠️ APRÈS le changement : faire `n 100000` (ou `f`) — la valeur d'accél. en NVS est
+// stockée EN PAS/s² et resterait deux fois trop rapide physiquement.
+constexpr int MICROSTEPS = 16;            // 16 = 3 cavaliers/socket ; 8 = MS1+MS2 seuls
 constexpr int STEPS_PER_REV = MOTOR_FULL_STEPS * MICROSTEPS; // 3200
 constexpr float WHEEL_DIAMETER_MM = 84.0f;
 constexpr float WHEEL_CIRCUM_MM = WHEEL_DIAMETER_MM * PI;    // ~263.9 mm
@@ -69,9 +78,75 @@ constexpr float WHEEL_BASE_MM = 150.0f;   // entraxe des roues (à mesurer sur t
 constexpr float LOOP_HZ = 200.0f;         // fréquence de la boucle d'équilibre
 constexpr float LOOP_DT = 1.0f / LOOP_HZ;
 
+// Filtre complémentaire (fusion accéléro+gyro) : poids du GYRO. τ ≈ LOOP_DT/(1-coef).
+// C'est un ARBITRAGE ENTRE DEUX PANNES OPPOSÉES, et le bon réglage dépend de ce qui
+// est actif ailleurs dans le firmware :
+//
+//   coef HAUT (τ long)  → le gyro domine. Sa dérive thermique n'est plus corrigée
+//     par l'accéléro : l'erreur en régime vaut ≈ biais×τ. C'est ce qui a produit les
+//     15-25° d'écart des runs 12/17 (robot vu vertical, pitch=-20°).
+//   coef BAS (τ court)  → l'accéléro domine. Or il ne distingue pas la gravité d'une
+//     accélération de roue : à 1 m/s² il fabrique atan(1/9.81) ≈ 5.8° de faux angle,
+//     DANS LE SENS de la correction → boucle de réaction positive. Le robot tremble,
+//     et le seuil de tremblement plafonne KP_ANGLE (mesuré : ~21 à coef 0.98).
+//
+// RÉVISÉ 13/08 : 0.98 → 0.999. La panne « coef haut » est désormais traitée à la
+// source — Balance::update() apprend le biais gyro EN CONTINU, et l'auto-trim θ₀
+// (`s`) recentre le point d'équilibre. Les deux n'existaient pas quand 0.98 a été
+// choisi. Reste donc la panne « coef bas », qui elle bride directement le gain.
+//
+// RÉGLABLE EN DIRECT via la console `y`. Ce qu'il faut surveiller après ce passage :
+// si `pitch` DÉRIVE lentement alors que le robot est visiblement droit et immobile,
+// c'est la panne « coef haut » qui revient → redescendre (0.995, puis 0.99).
+//
+// COMPARAISON B-ROBOT (docs/COMPARAISON.md §2) : lui tient à 0.99 @100 Hz, soit
+// τ ≈ 1 s — CINQ FOIS plus court qu'ici. Il peut se le permettre parce que son
+// DLPF matériel est à 10 Hz (MPU_DLPF_CFG=5) : l'accéléro qu'il fusionne est déjà
+// débarrassé des vibrations steppers. Nous filtrons à 44 Hz et compensons par un τ
+// long → 5× plus sensible au biais gyro. Depuis que le biais est suivi EN CONTINU
+// (GYRO_BIAS_TRACK_*), on peut redescendre : essayer `D 5` puis `y 0.995`.
+constexpr float FILTER_GYRO_COEF = 0.998f; // valeur du banc (run du 21/08)
+
+// Filtre passe-bas MATÉRIEL du MPU (registre CONFIG 0x1A, DLPF_CFG) :
+//   3 = accel 44 Hz / gyro 42 Hz (retard ~4.9 ms)   ← défaut ici
+//   4 = accel 21 Hz / gyro 20 Hz (retard ~8.5 ms)
+//   5 = accel 10 Hz / gyro 10 Hz (retard ~13.8 ms)  ← le réglage du B-Robot
+// Plus on filtre, plus l'angle accéléro est propre (donc plus on peut baisser
+// FILTER_GYRO_COEF et donc la sensibilité au biais gyro), mais plus le terme
+// d'amortissement KD_ANGLE·θ̇ arrive en retard. Réglable EN DIRECT : console `D`.
+constexpr uint8_t MPU_DLPF_CFG = 3;
+
 // Offset d'assiette : angle du MPU quand le robot est réellement à l'équilibre
 // (jamais parfaitement 0 à cause du montage). À ajuster à ±0.1° près.
-constexpr float BALANCE_OFFSET_DEG = 0.0f;
+// Valeur MESURÉE au banc sur ce châssis (session du 21/08) : la remettre en défaut
+// pour qu'un `f` (défauts usine) rende un robot immédiatement utilisable au lieu
+// d'un zéro faux de 3°. À re-trimmer (`z` puis `w`) si la mécanique bouge.
+constexpr float BALANCE_OFFSET_DEG = -2.96f;
+
+// --- Orientation du MPU (faits physiques du montage) ---
+// Rechargés par `f`/defauts usine (via applyDefaultTuning) pour reproduire un
+// montage cohérent sans tout recalibrer. Convention : penché en AVANT = pitch > 0.
+//   AXIS = axe de ROTATION du tangage dans le repère de la puce (0=X, 1=Y, 2=Z),
+//   c'est-à-dire l'axe PARALLÈLE À L'ESSIEU des roues. RÉVISÉ 13/08 : ce n'était
+//   avant qu'un choix entre getAngleX/getAngleY de la lib ; Balance calcule
+//   désormais l'angle lui-même (atan2 signé), donc les 3 axes sont disponibles et
+//   ⚠️ l'INCLINAISON DE LA CARTE AUTOUR DE CET AXE EST LIBRE — à plat, verticale
+//   ou à 45°, seul `o`/`z` change. Seule contrainte : l'essieu doit être parallèle
+//   à l'axe choisi. SIGN ±1 ; RATE_SIGN = signe du gyro vs l'angle (montage
+//   inversé → terme D anti-amortisseur si faux, corrigeable `k`).
+// Montage courant : `a -y` ⇒ AXIS=1, SIGN=-1. Vérifier RATE_SIGN via `k` après flash.
+constexpr uint8_t DEFAULT_PITCH_AXIS = 1;   // Y
+constexpr int8_t  DEFAULT_PITCH_SIGN = -1;  // ⇒ axe = -y
+constexpr int8_t  DEFAULT_RATE_SIGN = 1;    // à confirmer au banc (`k`)
+// Correctif d'ÉCHELLE du gyro (console `G`). 1.0 = on fait confiance à la lib.
+// Utile parce que beaucoup de MPU6050 vendus sont des clones qui IGNORENT le
+// registre GYRO_CONFIG : la lib croit être en ±500 °/s et divise par 65,5 alors
+// que la puce est restée en ±250 (sensibilité 131) → toutes les vitesses
+// doublées. main.cpp demande désormais explicitement le ±250, ce qui règle le cas
+// général ; ce facteur reste le filet si l'échelle est encore fausse.
+// Se MESURE : `y 0.95` donne l'angle accéléro (fiable) ; `y 0.9999` donne l'angle
+// gyro. Basculer le robot de 90° et ajuster `G` jusqu'à ce que les deux coïncident.
+constexpr float GYRO_SCALE = 1.0f;
 
 // PID de stabilité (boucle interne, rapide) — FORME VITESSE (refactor du 24/07,
 // cf. docs/COMPARAISON.md §1) : la boucle sort une VITESSE roue, plus une
@@ -79,40 +154,115 @@ constexpr float BALANCE_OFFSET_DEG = 0.0f;
 // de vitesse) et celle de rekomerio.
 //   v = KP_ANGLE·θ + KI_ANGLE·∫θ + KD_ANGLE·θ̇
 // KD_ANGLE·θ̇ est l'AMORTISSEMENT DIRECT qui manquait à l'ancienne forme
-// accélération (aucun terme en θ̇). Défauts = run 18 (raideur seule) : Kp=66, le
-// reste à 0 → régler au banc en montant KD_ANGLE. Console : `d`=Kp (raideur),
-// `p`=Ki (intégrale), `e`=Kd (amortissement).
-constexpr float KP_ANGLE = 66.0f;  // θ  → vitesse (raideur / rattrapage immédiat)
-constexpr float KI_ANGLE = 0.0f;   // ∫θ → vitesse (anti-dérive lente)
-constexpr float KD_ANGLE = 0.0f;   // θ̇  → vitesse (AMORTISSEMENT — le terme ajouté)
-// Borne anti-windup de l'intégrateur d'angle ∫θ (en deg·s). À Ki≈15 ⇒ ±20 deg·s
-// ≈ ±300 mm/s d'autorité intégrale ; le clamp final ±MAX_WHEEL_SPEED reste le garde-fou.
-constexpr float ANGLE_INTEG_LIMIT = 20.0f;
+// accélération (aucun terme en θ̇). Console : `d`=Kp (raideur), `p`=Ki (intégrale),
+// `e`=Kd (amortissement).
+// ⚠️ ÉCHELLE DU Kd — le piège qui a fait croire que `e` « ne marchait pas » : chez
+// Brokking `pid_d=30` multiplie (err−err_préc)=θ̇·dt (dt=4 ms) ⇒ gain effectif par
+// °/s = 30×0.004 = 0.12. Ici Kd multiplie gyroRate (°/s) DIRECTEMENT ⇒ l'équivalent
+// Brokking est Kd ≈ 0.008·Kp ≈ 0.3 (pour Kp=40), PAS 20-30 (qui saturent la roue dès
+// ~23 °/s). Mesuré au banc : 0.1 passe sans buzz, 0.3 siffle → on garde 0.1.
+//
+// ═══ KI_ANGLE : LE TERME QUI MANQUAIT (21/08, cf. docs/COMPARAISON.md §1) ═══
+// Le B-Robot ESP32 sort une ACCÉLÉRATION qu'il intègre (`control_output += PD`).
+// En développant la somme (Kp=0.32, Kd=0.050, dt=0.01 s), sa vitesse roue vaut :
+//     v = (Kd/dt)·θ + (Kp/dt)·∫θ  =  5·θ + 32·∫θ   [unités B-Robot]
+//       ≈ 21.6·θ + 138·∫θ                          [mm/s, θ en degrés]
+// Autrement dit : chez lui le terme INTÉGRAL est SIX FOIS plus gros que le terme
+// proportionnel, avec une constante de temps d'action de 1/6.4 = 0.16 s. C'est le
+// terme DOMINANT de sa commande, pas une correction de finition.
+//
+// Ici il était à 0, et rien d'autre n'était actif pour annuler une erreur statique
+// (KP_POS=0, AUTO_TRIM=0, KI_SPEED minuscule) : avec un zéro d'assiette faux de
+// seulement 0.5°, la loi rendait une vitesse roue constante de ~17 mm/s qui ne
+// s'annulait JAMAIS → le robot part, accélère, tombe. Signature exacte du « il
+// corrige, il a l'air vivant, mais il ne tient jamais ».
+// ⚠️ Le commentaire « OFF : évite la bagarre d'intégrateurs » était le raisonnement
+// faux : dans la forme vitesse, Ki·∫θ N'EST PAS un intégrateur en concurrence,
+// c'est l'équivalent EXACT du terme proportionnel de la forme accélération.
+// Valeur retenue : même ratio Ki/Kp que le B-Robot (6.4 s⁻¹) ⇒ Ki ≈ 6.4·Kp.
+constexpr float KP_ANGLE = 33.5f;  // θ  → vitesse (raideur ; valeur du banc)
+constexpr float KI_ANGLE = 200.0f; // ∫θ → vitesse (≈ 6.4·Kp — TERME DOMINANT, cf. ci-dessus)
+constexpr float KD_ANGLE = 0.1f;   // θ̇  → vitesse (amortissement ; valeur du banc)
+// Borne anti-windup de l'intégrateur d'angle ∫θ (en deg·s). ⚠️ À RECALER AVEC Ki :
+// à Ki=200, ±3 deg·s = ±600 mm/s d'autorité intégrale (ordre de grandeur du
+// B-Robot). L'ancien ±20 laissait passer ±4000 mm/s, soit un windup incontrôlable.
+constexpr float ANGLE_INTEG_LIMIT = 3.0f;
 
 // PID de vitesse (boucle externe, lente) : erreur de vitesse → angle de consigne.
 // C'est lui qui fait « pencher pour avancer » et qui empêche la dérive.
 // ⚠️ Trop fort, il claque la consigne d'angle en butée ±12° et couple les deux
 // boucles (oscillation lente) : rester doux.
-constexpr float KP_SPEED = 0.025f;
-constexpr float KI_SPEED = 0.001f;
+// Équivalences B-Robot (1 unité = 50 pas/s ≈ 4.3 mm/s) : KP_THROTTLE=0.080 ⇒
+// 0.0185 °/(mm/s) — on est du même ordre. KI_THROTTLE=0.1 ⇒ 0.023 °/mm, soit ~8×
+// notre 0.003 : il y a de la marge pour monter `i` si la dérive persiste.
+constexpr float KP_SPEED = 0.017f;  // valeur du banc
+constexpr float KI_SPEED = 0.003f;  // valeur du banc (B-Robot ≈ 0.023 : monter par paliers)
+
+// Correction de l'estimation de vitesse par l'inclinaison (recette B-Robot) :
+//   estimated_speed = vitesse_roue + k·θ̇
+// La vitesse des ROUES n'est pas celle du ROBOT quand celui-ci pivote : le B-Robot
+// retranche la rotation du corps avant d'alimenter sa boucle externe
+// (`estimated_speed = -actual_robot_speed + angular_velocity`, facteur empirique
+// équivalent à k ≈ 1 mm/s par °/s). Effet net : un amortissement supplémentaire de
+// KP_ANGLE·KP_SPEED·k mm/s par °/s, qui S'AJOUTE à KD_ANGLE.
+// ⚠️ DÉFAUT 0 = DÉSACTIVÉ, volontairement : à Kp=33.5 et v=0.017, k=1 ajouterait
+// 0.57 mm/s/(°/s), soit 6× le KD_ANGLE actuel. À activer SEULEMENT après avoir vu
+// le robot tenir, et en redescendant `e` en conséquence. Console `T`.
+constexpr float SPEED_EST_TILT_MM_S_PER_DPS = 0.0f;
+// Passe-bas sur la vitesse estimée (poids de l'ancienne valeur). Le B-Robot filtre
+// à 0.9 @100 Hz (τ = 0.1 s) ; à 200 Hz le même τ demande 0.95.
+constexpr float SPEED_EST_FILTER = 0.95f;
 
 // Ancre de position : à l'engagement de l'équilibre, la position des steppers
 // est mémorisée ; le robot revient doucement vers ce point au lieu de dériver
 // (indispensable en test filaire : il reste à portée des fils).
-constexpr float KP_POS = 0.4f;                // (mm/s de consigne) par mm d'écart
+// Défaut 0 = ancre NEUTRALISÉE pour la base Brokking (fioriture ; Brokking n'a
+// aucun asservissement de position). Le code reste : remettre >0 pour la rebrancher.
+constexpr float KP_POS = 0.0f;                // (mm/s de consigne) par mm d'écart
 constexpr float POS_RETURN_MAX_MM_S = 100.0f; // vitesse max du retour à l'ancre
+
+// Auto-trim du point d'équilibre θ₀ (recette Brokking `self_balance_pid_setpoint`) :
+// à l'arrêt commandé, la vitesse roue résiduelle donne le SIGNE de l'erreur sur θ₀ ; on
+// décale très lentement le zéro pour l'annuler → le robot trouve seul son équilibre et
+// cesse de dériver. θ₀_auto ← θ₀_auto − gain·v·dt. 0 = DÉSACTIVÉ (défaut) : c'est une
+// contre-réaction, à activer/régler au banc via la console `s` (démarrer très petit, ex.
+// 0.0005), échelle de temps ≪ équilibre, sol plat sans contact. ⚠️ NE PAS confondre avec
+// KI_ANGLE (∫θ) qui, lui, AGGRAVE un θ₀ faux — l'auto-trim porte sur la vitesse, pas l'angle.
+constexpr float AUTO_TRIM_GAIN = 0.0f;        // gain θ₀ ← −gain·v·dt ; 0 = off
+constexpr float AUTO_TRIM_LIMIT_DEG = 10.0f;  // borne de sécurité sur le θ₀ auto-trouvé
 
 // Armement au boot : false = moteurs inhibés tant qu'on n'arme pas (console `m`).
 // Garder false pendant la phase de tuning ; passer à true quand le robot est fiable.
 constexpr bool BOOT_ARMED = false;
 
 // Sécurité : au-delà de cet angle, on considère le robot tombé → moteurs coupés.
-constexpr float FALL_LIMIT_DEG = 40.0f;
-// Conditions de (re)démarrage de l'équilibre : le robot doit être à la fois
-// proche de la verticale ET quasi immobile (sinon l'engagement est perdu
-// d'avance — il partait dès 20° en plein mouvement).
-constexpr float RECOVER_LIMIT_DEG = 5.0f;
-constexpr float RECOVER_RATE_DEG_S = 30.0f;
+// 45° (au lieu de 40) : le B-Robot laisse tourner jusqu'à 74°, on garde une marge
+// mais on cesse d'abandonner une récupération encore possible.
+constexpr float FALL_LIMIT_DEG = 45.0f;
+// Conditions de (re)démarrage de l'équilibre : le robot doit être sous cet angle
+// ET pas trop en rotation. 5° était BEAUCOUP trop serré (impossible à poser à la
+// main) → élargi à 30°, juste sous FALL_LIMIT_DEG (40°) pour garder ~10° d'hystérésis
+// et éviter de chatterer engage/chute à la frontière. ⚠️ Depuis 30° il ne PEUT
+// physiquement pas toujours se rattraper (les roues n'arrivent pas à repasser sous le
+// CdM), mais il ESSAIE — bien mieux pour poser/régler. RECOVER_RATE borne la vitesse
+// angulaire à l'engagement : monté à 60°/s pour tolérer une pose pas parfaitement figée.
+// RÉVISÉ 21/08 (comparaison B-Robot) : lui n'a AUCUNE porte de réengagement — il
+// alimente les moteurs dès que |angle| < 74°, sans condition sur la vitesse
+// angulaire, et il n'a pas d'état « tombé » qui se verrouille. Notre porte à
+// 60 °/s empêchait tout rattrapage réel : dès la moindre excursion le robot se
+// coupait et refusait de repartir tant qu'on ne l'immobilisait pas à la main.
+// 150 °/s laisse le contrôleur ESSAYER pendant que le robot bouge encore.
+constexpr float RECOVER_LIMIT_DEG = 35.0f;
+constexpr float RECOVER_RATE_DEG_S = 150.0f;
+// Verrous anti-acharnement (22/08). Observé : robot couché à 17°, donc SOUS la porte
+// de 35° — il relançait les roues à fond, se faisait couper sur saturation 1,5 s plus
+// tard, et recommençait, dix fois de suite. Inutile (il ne peut pas se relever depuis
+// là) et c'est le régime qui chauffe le plus les drivers.
+constexpr uint32_t REENGAGE_COOLDOWN_MS = 1500; // délai imposé après TOUTE coupure
+// Porte resserrée tant que le robot n'a pas été REPOSÉ droit après une saturation.
+// La porte large de 35° sert à poser le robot à la main, pas à s'acharner depuis
+// une position d'où il ne peut physiquement pas revenir.
+constexpr float STRICT_RECOVER_LIMIT_DEG = 12.0f;
 
 // Rejet des lectures IMU corrompues. MPU6050_light::fetchData() ne teste PAS le
 // retour de requestFrom() : sur timeout I2C (EMI des steppers sur SDA/SCL) elle
@@ -126,20 +276,137 @@ constexpr float GYRO_GLITCH_JUMP_DPS = 250.0f;
 // consigne indéfiniment serait dangereux : au-delà de N rejets d'affilée, on coupe.
 constexpr uint16_t IMU_LOST_TICKS = 20; // 20 × 5 ms = 100 ms
 
-// Sécurité anti-emballement : en équilibre au sol, l'ancre de position borne la
-// course à quelques centimètres. Une dérive massive = roues dans le vide (robot
+// Apprentissage CONTINU du biais gyro (repli du résidu dans les offsets MPU quand
+// moteurs coupés + immobile ≥3 s). RÉACTIVÉ — le désactiver était une ERREUR (24/07).
+// Raisonnement faux au départ : « en forme vitesse un biais gyro n'est qu'un offset
+// de vitesse constant, donc inutile ». Vrai pour le terme D (kdAng·gyroRate), mais le
+// biais corrompt AUSSI l'angle fusionné (filtre complémentaire : erreur_angle ≈ biais×τ),
+// EN AMONT de la loi de commande. Symptôme diagnostique observé : angle qui lit le MÊME
+// signe qu'on penche en avant ou arrière (gros offset ≈ biais×τ) → `pitch` coincé hors
+// de la fenêtre ±5° → désengagement à la verticale, ne ré-engage plus. Le biais gyro de
+// Mochi est THERMIQUE (+1..+17°/s en chauffant) → l'apprentissage est INDISPENSABLE, pas
+// une fioriture. (Brokking peut garder 0.9996 sans apprentissage car son gyro est stable.)
+constexpr bool GYRO_BIAS_LEARNING = true;
+
+// SUIVI PERMANENT du biais gyro (ajouté 21/08 — recette B-Robot MPU6050.cpp) :
+//   correction = constrain(rate_brut, biais ± CLAMP)
+//   biais     += ALPHA · (correction − biais)
+// L'apprentissage ci-dessus ne tourne QUE moteurs coupés : pendant un run, la
+// dérive THERMIQUE (+1..+17 °/s documentée sur ce MPU) s'installe librement, et
+// avec τ ≈ 2.5 s de filtre complémentaire elle se traduit directement en erreur
+// d'angle de plusieurs degrés → le robot part et ne revient pas. Le B-Robot, lui,
+// corrige son biais EN PERMANENCE, y compris en équilibre.
+// Le double garde-fou (clamp étroit AUTOUR de l'estimation + α minuscule) fait que
+// le biais ne peut bouger que de ~0.0075 °/s par seconde : impossible d'absorber une
+// inclinaison réelle, on ne rattrape que la dérive lente. Mêmes chiffres que lui.
+constexpr float GYRO_BIAS_TRACK_ALPHA = 0.00025f; // τ ≈ 20 s à 200 Hz
+constexpr float GYRO_BIAS_TRACK_CLAMP_DPS = 0.15f; // = ±10 LSB à 65.5 LSB/(°/s)
+
+// Sécurité anti-emballement : une dérive massive = roues dans le vide (robot
 // suspendu aux longes / soulevé) ou emballement après un glitch → on coupe. Évite
 // aussi de compter ces épisodes comme du « vrai » équilibre dans les mesures.
-constexpr float RUNAWAY_LIMIT_MM = 400.0f;
+// ⚠️ RELÂCHÉ 400→1000 : sans ancre (KP_POS=0), la dérive LÉGITIME de la base
+// atteignait 400 mm et coupait l'équilibre (« ne tient pas »). Brokking n'a aucune
+// coupure de position ; 1000 mm laisse dériver mais le spin-dans-le-vide (roue à
+// fond) dépasse quand même en <1 s. Le garde-fou principal reste FALL_LIMIT_DEG.
+// RELÂCHÉ À NOUVEAU 1000→2500 (21/08) : un robot qui tient VRAIMENT l'équilibre
+// parcourt facilement 1 m en 30 s ; couper à 1000 mm, c'est déclarer « ça ne tient
+// pas » précisément quand ça commence à tenir. Le B-Robot n'a aucune coupure de
+// position. 0 = désactive complètement le test.
+// ⚠️ 22/08 : ce test ne s'applique plus QUE si l'ancre de position est en service
+// (KP_POS > 0). Avec KP_POS = 0 l'ancre n'est jamais recentrée, donc `traveledMm()`
+// mesure la dérive cumulée du run : un robot qui équilibre BIEN finissait par
+// franchir la limite en étant parfaitement vertical → coupure inexpliquée.
+constexpr float RUNAWAY_LIMIT_MM = 2500.0f;
+// Détecteur d'emballement indépendant de l'ancre : durée max pendant laquelle la
+// roue peut rester commandée à fond. Un vrai rattrapage sature quelques dixièmes de
+// seconde ; 1,5 s de pleine vitesse continue = robot soulevé ou roue qui patine.
+constexpr float RUNAWAY_SAT_MS = 1500.0f;
 
-// Bornes moteur. ⚠️ Une accélération trop forte fait SAUTER DES PAS (la vitesse
-// réelle décroche de la commande → le contrôleur devient aveugle). Valeurs
-// prudentes pour la phase de tuning ; à remonter ensuite si les moteurs suivent.
-constexpr float MAX_WHEEL_SPEED_MM_S = 700.0f; // vitesse linéaire max d'une roue
-// Le robot (25 cm) chute avec une constante de temps ~0.12 s : les roues doivent
-// inverser leur vitesse plus vite que ça, sinon chaque correction arrive en retard
-// et nourrit l'oscillation. Si les moteurs sautent des pas, redescendre.
-constexpr float MAX_ACCEL_STEPS_S2 = 56000.0f; // accélération FastAccelStepper (~4.6 m/s²)
+// Bornes moteur.
+// ⚠️ RELEVÉ 700→1400 (21/08). Le B-Robot plafonne à 500 unités × 50 pas/s =
+// 25 000 pas/s ⇒ 7.8 tr/s ⇒ ~2160 mm/s : TROIS FOIS notre ancienne limite. Une
+// autorité de rattrapage trop faible est une cause classique de « il corrige mais
+// il n'y arrive jamais » — le contrôleur demande, la roue ne suit pas.
+// À 1400 mm/s on demande 17 000 pas/s au 1/16 (≈ 5.3 tr/s) : c'est le domaine où un
+// A4988 en 12 V commence à décrocher sur un NEMA17. Réglable EN DIRECT (console `V`) :
+// monter tant que les moteurs ne perdent pas de pas. Si ça décroche, passer les
+// cavaliers en 1/8 et MICROSTEPS=8 (c'est le réglage livré du B-Robot ESP32) :
+// même vitesse pour deux fois moins de pas/s.
+constexpr float MAX_WHEEL_SPEED_MM_S = 1400.0f; // vitesse linéaire max d'une roue
+// Accélération du driver (rampe FastAccelStepper). ⚠️ POINT CRITIQUE de l'équilibre :
+// les robots de référence à pas-à-pas (Brokking YABR, rekomerio) écrivent la fréquence
+// de pas DIRECTEMENT, sans rampe — la roue change de vitesse quasi instantanément. Une
+// rampe trop molle rend l'actionneur aussi lent que la chute (τ~0.12 s) → robot « mou »
+// qui ne rattrape jamais. 56000 (~4.6 m/s²) était bien trop bas. Réglable EN DIRECT au
+// banc via la console `n` (viser 2e5 → 1e6) : monter tant que les moteurs ne SAUTENT PAS
+// de pas (sinon la vitesse réelle décroche → contrôleur aveugle), redescendre sinon.
+// ⚠️ CE N'EST PLUS LE FACTEUR LIMITANT (vérifié 21/08 contre le B-Robot) : lui
+// plafonne à MAX_ACCEL=14 unités par tick de 10 ms, soit 70 000 pas/s² ≈ 6 m/s².
+// Ce qui manquait n'était pas l'accélération, c'était KI_ANGLE et la vitesse max.
+//
+// ⚠️ 22/08 — C'EST MAINTENANT LE SUSPECT N°1 DES PAS PERDUS. Le robot rattrape, puis
+// tombe « au bout d'un moment » : signature d'un moteur qui décroche. Un stepper perd
+// des pas quand le COUPLE demandé dépasse ce qu'il peut fournir, et le couple demandé
+// est proportionnel à l'ACCÉLÉRATION. À 14 m/s² on demande 2,3× la référence B-Robot.
+// Et un pas perdu est invisible du contrôleur : il croit rouler à la vitesse commandée
+// alors que la roue décroche → l'angle part sans que la commande ne le voie.
+// Ordre des essais (console `n`, en direct) : 100000, puis 70000 (= le B-Robot).
+// Si le robot redevient « mou » avant que les pas cessent d'être perdus, c'est le
+// couple qui manque, pas le réglage → 1/8 de pas et/ou Vref des A4988.
+//
+// Exprimé en mm/s² et converti : sinon, passer MICROSTEPS de 16 à 8 DOUBLERAIT
+// silencieusement l'accélération physique pour la même constante en pas/s².
+constexpr float MAX_ACCEL_MM_S2 = 14000.0f; // ~14 m/s² (valeur du banc au 21/08)
+constexpr float MAX_ACCEL_STEPS_S2 = MAX_ACCEL_MM_S2 * STEPS_PER_MM;
+
+// Rampe INTERNE du driver, volontairement quasi instantanée (22/08).
+// MESURÉ : avec une rampe driver « normale », le générateur de FastAccelStepper
+// restait bloqué en RAMP_STATE_REVERSE (décélération pour inverser le sens) plus
+// de 60 ms d'affilée — on commandait 5000 pas/s, la roue tournait à 12. Près de
+// l'équilibre la consigne change de signe en permanence : la roue passait son
+// temps à COMMENCER des inversions sans jamais en finir une. C'était « l'absence ».
+// À 5e6 pas/s², une inversion pleine échelle prend ~3 ms : la machine à états ne
+// peut plus s'installer, et le driver redevient ce qu'il doit être — un exécutant.
+// La VRAIE limite d'accélération est désormais appliquée dans Balance::applyWheels,
+// comme le fait le B-Robot (`MAX_ACCEL` côté contrôleur, période écrite en direct).
+constexpr float DRIVER_RAMP_STEPS_S2 = 5000000.0f;
+
+// Détection « le driver ne suit pas la consigne » (Balance::checkDriverFollows).
+// Seuil bas : en dessous, la consigne est trop petite pour conclure quoi que ce
+// soit. Fenêtre : une rampe légitime atteint le quart de sa cible en ~10 ms à
+// 170 000 pas/s², donc 60 ms ne peuvent pas être un faux positif.
+constexpr long DRIVER_MUTE_MIN_SPS = 600;  // ≈ 50 mm/s
+constexpr float DRIVER_MUTE_MS = 60.0f;
+
+// Dither (console `H`, défaut 0 = off) : période d'alternance, en tours de boucle.
+// 4 ticks à 200 Hz = 25 Hz d'oscillation. Compromis assumé : plus rapide, on
+// multiplie les inversions de sens (le régime qui avait piégé la rampe du driver) ;
+// plus lent, l'oscillation devient visible et pollue l'angle sous le DLPF (44 Hz).
+// Tours de boucle pendant lesquels on laisse une inversion de sens aboutir sans
+// la re-planifier (cf. applyWheels). La file d'impulsions de FastAccelStepper
+// contient ~20 ms de mouvement engage ; 8 tours a 200 Hz = 40 ms, soit le double,
+// ce qui laisse la marge necessaire sans jamais figer une roue longtemps.
+// Frequence du balancier volontaire (console `B`, amplitude en degres ; 0 = off).
+// Le robot de reference ne converge JAMAIS vers son point d'equilibre : il oscille
+// autour. Ce n'est pas un defaut de reglage, c'est son regime de fonctionnement —
+// et c'est ce qui lui evite le seul regime que le generateur de rampe rate, celui
+// de la consigne qui traverse zero sans vitesse.
+// 1,5 Hz est choisi SOUS la frequence propre du pendule (1/(2*pi*tau) ~ 2,4 Hz a
+// tau = 66 ms) : assez lent pour que le robot suive, assez rapide pour que rien ne
+// s'immobilise. S'en approcher ferait resonner.
+constexpr float SWAY_HZ = 1.5f;
+
+constexpr uint8_t REVERSE_MAX_TICKS = 8;
+
+// En dessous de cette vitesse REELLE, une inversion de sens est tranchee net
+// (file videe, redemarrage a l'arret) plutot que negociee par la rampe. Mesure au
+// banc : les neuf enlisements observes etaient tous entre 747 et 1833 pas/s.
+// 2500 pas/s = 206 mm/s couvre tous ces cas en restant tres en dessous de la
+// frequence de demarrage/arret d'un NEMA 17 charge — l'arret sec ne coute rien.
+constexpr int32_t REVERSE_FORCE_MAX_SPS = 2500;
+
+constexpr uint8_t DITHER_PERIOD_TICKS = 4;
 
 // Vitesses des déplacements pilotés (FORWARD/BACKWARD/TURN).
 constexpr float CRUISE_SPEED_MM_S = 180.0f;    // vitesse de croisière d'un déplacement

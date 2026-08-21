@@ -8,9 +8,13 @@
   </head>
   <body>
     <header class="bar">
-      <button id="connect" class="primary">Connecter le port série</button>
+      <!-- Bluetooth en premier : c'est le mode de réglage réel (robot libre).
+           L'USB reste là pour le boot, le flash et le secours — mais son câble
+           tire sur le robot et fausse les essais d'équilibre. -->
+      <button id="connect-ble" class="primary">Connecter en Bluetooth</button>
+      <button id="connect">Connecter le port série (USB)</button>
       <span id="link" class="badge off">déconnecté</span>
-      <span id="rx" class="badge off">pas de port</span>
+      <span id="rx" class="badge off">pas de lien</span>
       <span id="state" class="badge">—</span>
       <span id="armed" class="badge">—</span>
       <span id="glt" class="badge">glt 0</span>
@@ -68,6 +72,7 @@
             <button data-cmd="t">t — stream</button>
             <button data-cmd="b">b — calib gyro</button>
             <button data-cmd="z">z — offset ici</button>
+            <button data-cmd="Z" title="Grave dans `o` le zéro que l'intégrale compense en permanence (champ o*). À faire après ~30 s d'équilibre calme, puis Sauver.">Z — adopter o*</button>
             <button data-cmd="m" class="danger">m — ARMER / désarmer</button>
           </div>
           <pre id="log"></pre>
