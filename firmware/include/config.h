@@ -220,38 +220,9 @@ constexpr float ANGLE_INTEG_LIMIT = 3.0f;
 constexpr float KP_SPEED = 0.017f;  // valeur du banc
 constexpr float KI_SPEED = 0.003f;  // valeur du banc (B-Robot ≈ 0.023 : monter par paliers)
 
-// Correction de l'estimation de vitesse par l'inclinaison (recette B-Robot) :
-//   estimated_speed = vitesse_roue + k·θ̇
-// La vitesse des ROUES n'est pas celle du ROBOT quand celui-ci pivote : le B-Robot
-// retranche la rotation du corps avant d'alimenter sa boucle externe
-// (`estimated_speed = -actual_robot_speed + angular_velocity`, facteur empirique
-// équivalent à k ≈ 1 mm/s par °/s). Effet net : un amortissement supplémentaire de
-// KP_ANGLE·KP_SPEED·k mm/s par °/s, qui S'AJOUTE à KD_ANGLE.
-// ⚠️ DÉFAUT 0 = DÉSACTIVÉ, volontairement : à Kp=33.5 et v=0.017, k=1 ajouterait
-// 0.57 mm/s/(°/s), soit 6× le KD_ANGLE actuel. À activer SEULEMENT après avoir vu
-// le robot tenir, et en redescendant `e` en conséquence. Console `T`.
-constexpr float SPEED_EST_TILT_MM_S_PER_DPS = 0.0f;
 // Passe-bas sur la vitesse estimée (poids de l'ancienne valeur). Le B-Robot filtre
 // à 0.9 @100 Hz (τ = 0.1 s) ; à 200 Hz le même τ demande 0.95.
 constexpr float SPEED_EST_FILTER = 0.95f;
-
-// Ancre de position : à l'engagement de l'équilibre, la position des steppers
-// est mémorisée ; le robot revient doucement vers ce point au lieu de dériver
-// (indispensable en test filaire : il reste à portée des fils).
-// Défaut 0 = ancre NEUTRALISÉE pour la base Brokking (fioriture ; Brokking n'a
-// aucun asservissement de position). Le code reste : remettre >0 pour la rebrancher.
-constexpr float KP_POS = 0.0f;                // (mm/s de consigne) par mm d'écart
-constexpr float POS_RETURN_MAX_MM_S = 100.0f; // vitesse max du retour à l'ancre
-
-// Auto-trim du point d'équilibre θ₀ (recette Brokking `self_balance_pid_setpoint`) :
-// à l'arrêt commandé, la vitesse roue résiduelle donne le SIGNE de l'erreur sur θ₀ ; on
-// décale très lentement le zéro pour l'annuler → le robot trouve seul son équilibre et
-// cesse de dériver. θ₀_auto ← θ₀_auto − gain·v·dt. 0 = DÉSACTIVÉ (défaut) : c'est une
-// contre-réaction, à activer/régler au banc via la console `s` (démarrer très petit, ex.
-// 0.0005), échelle de temps ≪ équilibre, sol plat sans contact. ⚠️ NE PAS confondre avec
-// KI_ANGLE (∫θ) qui, lui, AGGRAVE un θ₀ faux — l'auto-trim porte sur la vitesse, pas l'angle.
-constexpr float AUTO_TRIM_GAIN = 0.0f;        // gain θ₀ ← −gain·v·dt ; 0 = off
-constexpr float AUTO_TRIM_LIMIT_DEG = 10.0f;  // borne de sécurité sur le θ₀ auto-trouvé
 
 // Armement au boot : false = moteurs inhibés tant qu'on n'arme pas (console `m`).
 // Garder false pendant la phase de tuning ; passer à true quand le robot est fiable.
@@ -324,23 +295,11 @@ constexpr bool GYRO_BIAS_LEARNING = true;
 constexpr float GYRO_BIAS_TRACK_ALPHA = 0.00025f; // τ ≈ 20 s à 200 Hz
 constexpr float GYRO_BIAS_TRACK_CLAMP_DPS = 0.15f; // = ±10 LSB à 65.5 LSB/(°/s)
 
-// Sécurité anti-emballement : une dérive massive = roues dans le vide (robot
-// suspendu aux longes / soulevé) ou emballement après un glitch → on coupe. Évite
-// aussi de compter ces épisodes comme du « vrai » équilibre dans les mesures.
-// ⚠️ RELÂCHÉ 400→1000 : sans ancre (KP_POS=0), la dérive LÉGITIME de la base
-// atteignait 400 mm et coupait l'équilibre (« ne tient pas »). Brokking n'a aucune
-// coupure de position ; 1000 mm laisse dériver mais le spin-dans-le-vide (roue à
-// fond) dépasse quand même en <1 s. Le garde-fou principal reste FALL_LIMIT_DEG.
-// RELÂCHÉ À NOUVEAU 1000→2500 (21/08) : un robot qui tient VRAIMENT l'équilibre
-// parcourt facilement 1 m en 30 s ; couper à 1000 mm, c'est déclarer « ça ne tient
-// pas » précisément quand ça commence à tenir. Le B-Robot n'a aucune coupure de
-// position. 0 = désactive complètement le test.
-// ⚠️ 22/08 : ce test ne s'applique plus QUE si l'ancre de position est en service
-// (KP_POS > 0). Avec KP_POS = 0 l'ancre n'est jamais recentrée, donc `traveledMm()`
-// mesure la dérive cumulée du run : un robot qui équilibre BIEN finissait par
-// franchir la limite en étant parfaitement vertical → coupure inexpliquée.
-constexpr float RUNAWAY_LIMIT_MM = 2500.0f;
-// Détecteur d'emballement indépendant de l'ancre : durée max pendant laquelle la
+// Sécurité anti-emballement : roues dans le vide (robot soulevé) ou emballement
+// après un glitch. ⚠️ Il y avait ici un second test, sur la DISTANCE parcourue
+// depuis l'ancre de position ; il est parti avec elle — cf. Balance::update(), qui
+// garde l'explication de pourquoi il ne faut pas le re-tenter.
+// Durée max pendant laquelle la
 // roue peut rester commandée à fond. Un vrai rattrapage sature quelques dixièmes de
 // seconde ; 1,5 s de pleine vitesse continue = robot soulevé ou roue qui patine.
 constexpr float RUNAWAY_SAT_MS = 1500.0f;
@@ -409,22 +368,6 @@ constexpr float DRIVER_RAMP_STEPS_S2 = 5000000.0f;
 constexpr long DRIVER_MUTE_MIN_SPS = 600;  // ≈ 50 mm/s
 constexpr float DRIVER_MUTE_MS = 60.0f;
 
-// Dither (console `H`, défaut 0 = off) : période d'alternance, en tours de boucle.
-// 4 ticks à 200 Hz = 25 Hz d'oscillation. Compromis assumé : plus rapide, on
-// multiplie les inversions de sens (le régime qui avait piégé la rampe du driver) ;
-// plus lent, l'oscillation devient visible et pollue l'angle sous le DLPF (44 Hz).
-// Tours de boucle pendant lesquels on laisse une inversion de sens aboutir sans
-// la re-planifier (cf. applyWheels). La file d'impulsions de FastAccelStepper
-// contient ~20 ms de mouvement engage ; 8 tours a 200 Hz = 40 ms, soit le double,
-// ce qui laisse la marge necessaire sans jamais figer une roue longtemps.
-// Frequence du balancier volontaire (console `B`, amplitude en degres ; 0 = off).
-// Le robot de reference ne converge JAMAIS vers son point d'equilibre : il oscille
-// autour. Ce n'est pas un defaut de reglage, c'est son regime de fonctionnement —
-// et c'est ce qui lui evite le seul regime que le generateur de rampe rate, celui
-// de la consigne qui traverse zero sans vitesse.
-// 1,5 Hz est choisi SOUS la frequence propre du pendule (1/(2*pi*tau) ~ 2,4 Hz a
-// tau = 66 ms) : assez lent pour que le robot suive, assez rapide pour que rien ne
-// s'immobilise. S'en approcher ferait resonner.
 // ═══ PLANCHER DE VITESSE ROUE (console `F`) — N'EST PAS UN REGLAGE DE GOUT ═══
 // C'est le contournement d'un DEFAUT D'ACTIONNEUR, d'ou un defaut d'usine non nul.
 // FastAccelStepper s'enlise des que la consigne roue passe par zero : sa rampe doit
@@ -453,8 +396,10 @@ constexpr float DRIVER_MUTE_MS = 60.0f;
 // DRIVER_MUTE_MIN_SPS = 600 pas/s, tres au-dessus de la zone du plancher (F 8 = 97).
 constexpr float SPEED_FLOOR_MM_S = 8.0f;
 
-constexpr float SWAY_HZ = 1.5f;
-
+// Tours de boucle pendant lesquels on laisse une inversion de sens aboutir sans la
+// re-planifier (cf. applyWheels). La file d'impulsions de FastAccelStepper contient
+// ~20 ms de mouvement engage ; 8 tours a 200 Hz = 40 ms, soit le double, ce qui
+// laisse la marge necessaire sans jamais figer une roue longtemps.
 constexpr uint8_t REVERSE_MAX_TICKS = 8;
 
 // En dessous de cette vitesse REELLE, une inversion de sens est tranchee net
@@ -463,12 +408,6 @@ constexpr uint8_t REVERSE_MAX_TICKS = 8;
 // 2500 pas/s = 206 mm/s couvre tous ces cas en restant tres en dessous de la
 // frequence de demarrage/arret d'un NEMA 17 charge — l'arret sec ne coute rien.
 constexpr int32_t REVERSE_FORCE_MAX_SPS = 2500;
-
-constexpr uint8_t DITHER_PERIOD_TICKS = 4;
-
-// Vitesses des déplacements pilotés (FORWARD/BACKWARD/TURN).
-constexpr float CRUISE_SPEED_MM_S = 180.0f;    // vitesse de croisière d'un déplacement
-constexpr float TURN_RATE_DEG_S = 90.0f;       // vitesse de rotation sur place
 
 // ─────────────────────────────────────────────────────────────────────────
 //  TÉLÉGUIDAGE (OP_DRIVE / console `u`) — cf. protocol.h
@@ -485,6 +424,11 @@ constexpr float TURN_RATE_DEG_S = 90.0f;       // vitesse de rotation sur place
 // Plafonds volontairement DOUX pour la première mise en main (le B-Robot est à
 // ±1180 mm/s en mode normal et ±1700 en mode PRO — c'est une fusée). À monter à
 // la console une fois la conduite prise en main : `P` et `R`.
+// ⚠️ CE SONT AUSSI les vitesses des déplacements SCRIPTÉS (FORWARD/BACKWARD/TURN/
+// LOOK). Il y avait avant une « vitesse de croisière » distincte (180 mm/s, 90 °/s) :
+// deux vitesses pour un seul robot, qui divergeaient au premier réglage et dont
+// personne ne savait laquelle s'appliquait. `P` et `R` répondent désormais à une
+// seule question — « à quelle vitesse ce robot se déplace-t-il ? ».
 constexpr float TELEOP_MAX_SPEED_MM_S = 300.0f; // fond de course avant/arrière
 constexpr float TELEOP_MAX_TURN_DEG_S = 120.0f; // fond de course rotation
 

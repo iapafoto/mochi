@@ -42,11 +42,8 @@ void Tuning::begin(Balance* balance, Console& io) {
         balance_->setKiAng(prefs.getFloat("kiAngV2", balance_->kiAng()));
         balance_->setKdAng(prefs.getFloat("kdAngV2", balance_->kdAng()));
         balance_->setMaxWheelSpeed(prefs.getFloat("vmax", balance_->maxWheelSpeed()));
-        balance_->setSpeedEstTilt(prefs.getFloat("estTilt", balance_->speedEstTilt()));
         balance_->setDlpf(prefs.getUChar("dlpf", balance_->dlpf()));
-        balance_->setDitherMmS(prefs.getFloat("dither", balance_->ditherMmS()));
         balance_->setSpeedFloorMmS(prefs.getFloat("vfloor", balance_->speedFloorMmS()));
-        balance_->setSwayDeg(prefs.getFloat("sway", balance_->swayDeg()));
         balance_->setMaxLeanDeg(prefs.getFloat("lean", balance_->maxLeanDeg()));
         balance_->setTeleopMaxSpeed(prefs.getFloat("tlSpeed", balance_->teleopMaxSpeed()));
         balance_->setTeleopMaxTurn(prefs.getFloat("tlTurn", balance_->teleopMaxTurn()));
@@ -62,13 +59,11 @@ void Tuning::begin(Balance* balance, Console& io) {
       }
       balance_->setKpSpeed(prefs.getFloat("kpSpeed", balance_->kpSpeed()));
       balance_->setKiSpeed(prefs.getFloat("kiSpeed", balance_->kiSpeed()));
-      balance_->setKpPos(prefs.getFloat("kpPos", balance_->kpPos()));
       balance_->setOffsetDeg(prefs.getFloat("offset", balance_->offsetDeg()));
       balance_->setPitchAxis(prefs.getUChar("axis", 0), (int8_t)prefs.getChar("sign", 1));
       balance_->setInvertLeft(prefs.getBool("invL", balance_->invertLeft()));
       balance_->setInvertRight(prefs.getBool("invR", balance_->invertRight()));
       balance_->setRateSign((int8_t)prefs.getChar("rateS", 1));
-      balance_->setAutoTrimGain(prefs.getFloat("autoTrim", balance_->autoTrimGain()));
       balance_->setMaxAccel(prefs.getFloat("accel", balance_->maxAccel()));
       balance_->setFilterCoef(prefs.getFloat("fcoef", balance_->filterCoef()));
       balance_->setGyroScale(prefs.getFloat("gscale", balance_->gyroScale()));
@@ -121,11 +116,10 @@ void Tuning::poll() {
     static const char* const CAUSE[] = {
       "?", "ANGLE (chute franche, normal)",
       "IMU PERDUE (rejets I2C consecutifs — bus bruite, PAS les gains)",
-      "DERIVE (ancre de position depassee)",
       "SATURATION (roue a fond en continu — soulevee ? patinage ?)",
     };
     io_->printf("[CUT ] %s | pitch=%+.1f v=%+.0fmm/s x=%+.0fmm glt=%lu t=%lus\n",
-                CAUSE[cut.cause < 5 ? cut.cause : 0], cut.pitchDeg, cut.wheelMmS,
+                CAUSE[cut.cause < 4 ? cut.cause : 0], cut.pitchDeg, cut.wheelMmS,
                 cut.traveledMm, (unsigned long)cut.glitches,
                 (unsigned long)(cut.atMs / 1000));
   }
@@ -148,11 +142,11 @@ void Tuning::poll() {
     // quasi figé : s'il grimpe pendant un run, le bus est bruité, pas les gains.
     // `o*` = zéro que l'intégrale compense en permanence. Quand il se stabilise
     // pendant un équilibre calme, `Z` puis `w` le gravent → plus de dérive au départ.
-    io_->printf("[tune] pitch=%+7.2f gy=%+7.1f (X=%+7.2f Y=%+7.2f) tgt=%+6.2f v=%+6.0fmm/s x=%+6.0fmm glt=%lu trim=%+6.2f o*=%+6.2f %s%s\n",
+    io_->printf("[tune] pitch=%+7.2f gy=%+7.1f (X=%+7.2f Y=%+7.2f) tgt=%+6.2f v=%+6.0fmm/s x=%+6.0fmm glt=%lu o*=%+6.2f %s%s\n",
                   balance_->pitchDeg(), balance_->gyroRateDps(),
                   balance_->rawAngleX(), balance_->rawAngleY(),
                   balance_->targetDeg(), balance_->wheelMmS(), balance_->traveledMm(),
-                  (unsigned long)balance_->glitchCount(), balance_->autoTrimDeg(),
+                  (unsigned long)balance_->glitchCount(),
                   balance_->suggestedOffsetDeg(),
                   stateName(balance_->state()), balance_->armed() ? "" : " (desarme)");
   }
@@ -178,7 +172,6 @@ void Tuning::handleLine(char* line) {
     case 'e': balance_->setKdAng(atof(arg)); printState(); break;
     case 'v': balance_->setKpSpeed(atof(arg)); printState(); break;
     case 'i': balance_->setKiSpeed(atof(arg)); printState(); break;
-    case 'q': balance_->setKpPos(atof(arg)); printState(); break;
     case 'n':
       balance_->setMaxAccel(atof(arg));
       // L'accélération demandée par la boucle vaut d × θ̇ (mm/s² pour θ̇ en °/s).
@@ -198,42 +191,17 @@ void Tuning::handleLine(char* line) {
       io_->printf("[tune] filtre coef gyro = %.4f (bas=+accelero, angle sans derive ; baisser si l'angle ment droit)\n",
                     balance_->filterCoef());
       break;
-    case 's':
-      balance_->setAutoTrimGain(atof(arg));
-      io_->printf("[tune] auto-trim theta0 gain = %.4f (0=off ; sol plat, sans contact)\n",
-                    balance_->autoTrimGain());
-      break;
     case 'V':
       balance_->setMaxWheelSpeed(atof(arg));
       io_->printf("[tune] vitesse roue max = %.0f mm/s (B-Robot : ~2160 ; monter tant "
                   "que les moteurs ne perdent pas de pas)\n",
                   balance_->maxWheelSpeed());
       break;
-    case 'T':
-      balance_->setSpeedEstTilt(atof(arg));
-      io_->printf("[tune] correction v_robot = v_roue + %.2f*gyro (0 = off ; B-Robot ~1.0 ; "
-                  "ajoute de l'amortissement, redescendre `e` en consequence)\n",
-                  balance_->speedEstTilt());
-      break;
-    case 'H':
-      balance_->setDitherMmS(atof(arg));
-      io_->printf("[tune] dither = %.0f mm/s (0 = off ; contre le JEU mecanique et le "
-                  "frottement autour de zero — verifier le jeu a la main d'abord)\n",
-                  balance_->ditherMmS());
-      break;
     case 'x':
       // Sans ça, tous les compteurs datent du BOOT : impossible de comparer deux
       // réglages sans reflasher entre les deux. À taper juste avant chaque essai.
       balance_->resetLoopStats();
       io_->println("[tune] compteurs remis a zero — nouveau run");
-      break;
-    case 'B':
-      balance_->setSwayDeg(atof(arg));
-      io_->printf("[tune] balancier = %.2f deg a %.1f Hz (0 = off) -> ~%.0f mm/s "
-                  "d'amplitude sur la vitesse roue ; le robot ne s'immobilise plus "
-                  "au point zero, comme le B-Robot\n",
-                  balance_->swayDeg(), SWAY_HZ,
-                  balance_->swayDeg() * balance_->kpAng());
       break;
     case 'F':
       balance_->setSpeedFloorMmS(atof(arg));
@@ -367,19 +335,12 @@ void Tuning::printHelp() {
       "  e <val>    amortissement Kd : gyro -> vitesse (freine, NOUVEAU)\n"
       "  v <val>    KP_SPEED  (boucle vitesse)\n"
       "  i <val>    KI_SPEED  (anti-derive)\n"
-      "  q <val>    KP_POS    (rappel vers le point d'engagement ; 0 = off)\n"
       "  n <val>    accel driver steps/s2 (LIVE ; viser 2e5..1e6 ; baisser si pas sautes)\n"
       "  y <val>    filtre coef gyro 0.80..0.9999 (LIVE ; baisser si l'angle ment quand droit)\n"
-      "  s <val>    auto-trim theta0 (0=off ; le robot trouve son zero, sol plat sans contact)\n"
       "  V <mm/s>   vitesse roue max = autorite de rattrapage (B-Robot ~2160)\n"
-      "  T <k>      v_robot = v_roue + k*gyro (0=off, B-Robot ~1.0 ; amortit en plus de `e`)\n"
       "  D <0..6>   DLPF materiel du MPU (3=44Hz, 4=21Hz, 5=10Hz=reglage B-Robot)\n"
-      "  H <mm/s>   dither : oscillation de la consigne pour traverser la zone morte\n"
-      "             (jeu mecanique / frottement) ; 0 = off. Verifier le jeu a la main d'abord\n"
       "  F <mm/s>   plancher de vitesse a signe preserve : borne la latence de l'actionneur\n"
       "             pres de zero (16 mm/s = 5 ms). 0 = off. Cf. `contresens` dans `g`\n"
-      "  B <deg>    balancier volontaire sur la consigne d'angle (0 = off ; ~0.5 pour\n"
-      "             commencer). Empeche la consigne roue de s'immobiliser au point zero\n"
       "  x          remet les compteurs a zero (a taper avant chaque essai)\n"
       "  o <deg>    offset d'assiette absolu\n"
       "  z          capturer l'offset (pose actuelle = 0 deg)\n"
@@ -389,7 +350,8 @@ void Tuning::printHelp() {
       "  b          recalibrer le gyro SEUL (robot POSE, pose libre, ~3 s sans toucher)\n"
       "  a [-]x|y|z axe de ROTATION du tangage = axe // a l'essieu (penche AVANT -> pitch > 0)\n"
       "             l'inclinaison de la carte autour de cet axe est libre (`z` absorbe)\n"
-      "  k          inverser le signe du gyro (terme D) — montage MPU inverse\n"
+      "  k          inverser le signe du gyro (terme D) — montage MPU inverse ; lu dans `g`\n"
+      "             sous `ks=` (c'etait le seul fait de calibration non relisible)\n"
       "  G <val>    echelle gyro (clones MPU6050). Mesure : `y 0.95` = angle accelero\n"
       "             (fiable) vs `y 0.9999` = angle gyro ; basculer 90 deg, ajuster.\n"
       "  l / r      inverser le sens de la roue gauche / droite\n"
@@ -410,29 +372,27 @@ void Tuning::printHelp() {
 
 void Tuning::printState() {
   io_->printf(
-      "[tune] p=%.3f d=%.3f v=%.4f i=%.5f q=%.3f o=%+.2f e=%.3f axe=%s%c invL=%d invR=%d | "
-      "pitch=%+.2f glt=%lu acc=%.0f y=%.4f s=%.4f gs=%.3f trim=%+.2f | "
-      "V=%.0f T=%.2f D=%u H=%.0f F=%.0f B=%.2f | conduite A=%.0f P=%.0f R=%.0f | "
+      "[tune] p=%.3f d=%.3f v=%.4f i=%.5f o=%+.2f e=%.3f axe=%s%c ks=%+d invL=%d invR=%d | "
+      "pitch=%+.2f glt=%lu acc=%.0f y=%.4f gs=%.3f | "
+      "V=%.0f D=%u F=%.0f | conduite A=%.0f P=%.0f R=%.0f | "
       "bias=%+.2f o*=%+.2f %s%s\n",
       balance_->kiAng(), balance_->kpAng(), balance_->kpSpeed(), balance_->kiSpeed(),
-      balance_->kpPos(), balance_->offsetDeg(), balance_->kdAng(), balance_->pitchSign() < 0 ? "-" : "",
-      "xyz"[balance_->pitchAxis() % 3], balance_->invertLeft(), balance_->invertRight(),
+      balance_->offsetDeg(), balance_->kdAng(), balance_->pitchSign() < 0 ? "-" : "",
+      "xyz"[balance_->pitchAxis() % 3], (int)balance_->rateSign(),
+      balance_->invertLeft(), balance_->invertRight(),
       balance_->pitchDeg(), (unsigned long)balance_->glitchCount(),
-      balance_->maxAccel(), balance_->filterCoef(), balance_->autoTrimGain(),
-      balance_->gyroScale(), balance_->autoTrimDeg(),
-      balance_->maxWheelSpeed(), balance_->speedEstTilt(), (unsigned)balance_->dlpf(),
-      balance_->ditherMmS(), balance_->speedFloorMmS(), balance_->swayDeg(),
+      balance_->maxAccel(), balance_->filterCoef(), balance_->gyroScale(),
+      balance_->maxWheelSpeed(), (unsigned)balance_->dlpf(), balance_->speedFloorMmS(),
       balance_->maxLeanDeg(), balance_->teleopMaxSpeed(), balance_->teleopMaxTurn(),
       balance_->gyroBiasDps(), balance_->suggestedOffsetDeg(),
       stateName(balance_->state()), balance_->armed() ? "" : " (desarme)");
   // Bilan des coupures depuis le boot. Un run qui « a des absences » sans qu'AUCUN
   // de ces compteurs ne bouge désigne le matériel, pas le firmware.
-  io_->printf("[tune] coupures : angle=%u imu=%u derive=%u saturation=%u | "
+  io_->printf("[tune] coupures : angle=%u imu=%u saturation=%u | "
               "boucle late=%lu pire=%lums drv_muet=%u | butee %.0f%% max=%lums ecret=%.0f%% | "
               "contresens max=%lums @cmd=%ld inv_forcee=%u\n",
               balance_->cutCount(Balance::CUT_ANGLE),
               balance_->cutCount(Balance::CUT_IMU_LOST),
-              balance_->cutCount(Balance::CUT_RUNAWAY),
               balance_->cutCount(Balance::CUT_SATURATION),
               (unsigned long)balance_->lateTicks(),
               (unsigned long)(balance_->worstTickUs() / 1000),
@@ -454,30 +414,28 @@ void Tuning::save() {
   prefs.putFloat("kiAngV2", balance_->kiAng());
   prefs.putFloat("kdAngV2", balance_->kdAng());
   prefs.putFloat("vmax", balance_->maxWheelSpeed());
-  prefs.putFloat("estTilt", balance_->speedEstTilt());
   prefs.putUChar("dlpf", balance_->dlpf());
-  prefs.putFloat("dither", balance_->ditherMmS());
   prefs.putFloat("vfloor", balance_->speedFloorMmS());
-  prefs.putFloat("sway", balance_->swayDeg());
   prefs.putFloat("lean", balance_->maxLeanDeg());
   prefs.putFloat("tlSpeed", balance_->teleopMaxSpeed());
   prefs.putFloat("tlTurn", balance_->teleopMaxTurn());
   // Purge des clés des générations précédentes (sinon `isKey("kpAng")` ferait
   // croire éternellement à une migration en attente). `isKey` d'abord : après un
   // `f` elles n'existent pas et `remove` loggerait une erreur NOT_FOUND.
-  for (const char* dead : {"kpStab", "kdStab", "kpAng", "kiAng", "kdAng"}) {
+  // Cles des mecanismes retires (ancre `q`, auto-trim `s`, correction `T`, dither
+  // `H`, balancier `B`) : sans purge elles resteraient en NVS pour toujours.
+  for (const char* dead : {"kpStab", "kdStab", "kpAng", "kiAng", "kdAng",
+                           "kpPos", "autoTrim", "estTilt", "dither", "sway"}) {
     if (prefs.isKey(dead)) prefs.remove(dead);
   }
   prefs.putFloat("kpSpeed", balance_->kpSpeed());
   prefs.putFloat("kiSpeed", balance_->kiSpeed());
-  prefs.putFloat("kpPos", balance_->kpPos());
   prefs.putFloat("offset", balance_->offsetDeg());
   prefs.putUChar("axis", balance_->pitchAxis());
   prefs.putChar("sign", balance_->pitchSign());
   prefs.putBool("invL", balance_->invertLeft());
   prefs.putBool("invR", balance_->invertRight());
   prefs.putChar("rateS", balance_->rateSign());
-  prefs.putFloat("autoTrim", balance_->autoTrimGain());
   prefs.putFloat("accel", balance_->maxAccel());
   prefs.putFloat("fcoef", balance_->filterCoef());
   prefs.putFloat("gscale", balance_->gyroScale());

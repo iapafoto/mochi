@@ -50,8 +50,6 @@ void Balance::applyDefaultTuning() {
   kdAng_ = KD_ANGLE;
   kpSpeed_ = KP_SPEED;
   kiSpeed_ = KI_SPEED;
-  kpPos_ = KP_POS;
-  autoTrimGain_ = AUTO_TRIM_GAIN;
   offsetDeg_ = BALANCE_OFFSET_DEG;
   pitchAxis_ = DEFAULT_PITCH_AXIS; // montage MPU (config.h) : `f` reproduit `a -y`
   pitchSign_ = DEFAULT_PITCH_SIGN;
@@ -68,10 +66,7 @@ void Balance::applyDefaultTuning() {
   setTeleopMaxSpeed(TELEOP_MAX_SPEED_MM_S); // fond de course manette (console `P`)
   setTeleopMaxTurn(TELEOP_MAX_TURN_DEG_S);  // fond de course manette (console `R`)
   setSpeedFloorMmS(SPEED_FLOOR_MM_S); // plancher anti-enlisement (console `F`)
-  speedEstTilt_ = SPEED_EST_TILT_MM_S_PER_DPS; // correction v_robot ≠ v_roue (console `T`)
   setDlpf(MPU_DLPF_CFG);          // appliqué au prochain tick du cœur 1 (console `D`)
-  setDitherMmS(0.0f);             // dither désactivé par défaut (console `H`)
-  setSwayDeg(0.0f);               // balancier désactivé par défaut (console `B`)
   // ⚠️ NON NUL par défaut, et c'est volontaire : sans lui le robot tombe au point
   // d'équilibre (cf. SPEED_FLOOR_MM_S). Un `f` doit le RÉTABLIR, pas l'effacer.
   setSpeedFloorMmS(SPEED_FLOOR_MM_S);
@@ -374,22 +369,17 @@ void Balance::update() {
   }
 
   // --- Sécurité anti-emballement (roues dans le vide / suite de glitch) ---
-  // ⚠️ CORRIGÉ 22/08 — CE TEST ÉTAIT LUI-MÊME UN SUSPECT DE « L'ABSENCE ».
-  // Le raisonnement d'origine (« l'ancre borne la course à quelques centimètres »)
-  // n'est vrai QUE si l'ancre est asservie, c'est-à-dire si kpPos_ > 0. Or on
-  // tourne avec KP_POS = 0 (base B-Robot) : l'ancre est alors posée une fois à
-  // l'engagement et plus jamais recentrée, donc `traveledMm()` mesure la dérive
-  // CUMULÉE depuis le début du run. Un robot qui équilibre BIEN dérive quand même
-  // de quelques centimètres par seconde → il finit par franchir la limite alors
-  // qu'il est parfaitement vertical, et les moteurs se coupent d'un coup. Vu de
-  // l'extérieur : « il a une absence alors que rien n'a changé ». Le test ne
-  // s'applique donc plus que si l'ancre est réellement en service.
-  if (kpPos_ > 0.0f && RUNAWAY_LIMIT_MM > 0.0f &&
-      fabsf(traveledMm()) > RUNAWAY_LIMIT_MM) {
-    cutMotors(CUT_RUNAWAY);
-    return;
-  }
-  // Détecteur d'emballement qui, lui, ne dépend pas de l'ancre : une roue
+  // ⚠️ HISTORIQUE, à ne pas re-tenter : il y avait ici un second test, sur la
+  // DISTANCE parcourue depuis l'ancre. Il partait du principe que l'ancre borne la
+  // course à quelques centimètres — ce qui n'est vrai QUE si elle est asservie. Sans
+  // asservissement de position (on suit la base B-Robot, qui n'en a pas), l'ancre est
+  // posée une fois à l'engagement et jamais recentrée : le test mesurait donc la
+  // dérive CUMULÉE du run et coupait un robot parfaitement vertical au bout de
+  // quelques dizaines de secondes. Vu de l'extérieur : « il a une absence alors que
+  // rien n'a changé ». Il a d'abord été conditionné à l'ancre, donc rendu inerte,
+  // puis supprimé avec elle — une sécurité qui ne s'exécute jamais est pire qu'une
+  // sécurité absente, parce qu'on croit l'avoir.
+  // Le détecteur ci-dessous, lui, ne dépend d'aucune ancre : une roue
   // commandée à fond EN CONTINU n'est plus un rattrapage. Un vrai rattrapage
   // sature quelques dixièmes de seconde ; au-delà, le robot est soulevé, une roue
   // patine, ou la consigne s'est emballée. C'est ce test qui protège vraiment.
@@ -415,25 +405,22 @@ void Balance::update() {
     satTicks_ = 0;
   }
 
-  // --- Ancre de position : rappel doux vers le point d'engagement ---
-  // Pendant un déplacement commandé, l'ancre suit le robot (pas de rappel) ;
-  // à l'arrêt, l'écart de position se convertit en consigne de vitesse bornée.
-  float returnMmS = 0.0f;
-  if (cmdSpeed != 0.0f || cmdSteer != 0.0f) {
-    posAnchorSteps_ = forwardSteps();
-  } else {
-    returnMmS = constrain(-kpPos_ * traveledMm(),
-                          -POS_RETURN_MAX_MM_S, POS_RETURN_MAX_MM_S);
-  }
+  // --- Ancre de position : repère de MESURE, plus un asservissement ---
+  // Elle ne commande plus rien (le rappel vers le point d'engagement a été retiré
+  // avec `q`/KP_POS : jamais utilisé, et la base de référence n'en a pas). Elle sert
+  // uniquement à `traveledMm()`, donc au `x=` du stream — combien le robot a dérivé
+  // depuis l'engagement, ce qui reste l'indicateur le plus lisible d'un zéro faux.
+  // Pendant un déplacement commandé, l'ancre suit le robot : sinon `x` mesurerait le
+  // trajet voulu au lieu de la dérive subie.
+  if (cmdSpeed != 0.0f || cmdSteer != 0.0f) posAnchorSteps_ = forwardSteps();
 
   // --- Estimation de la vitesse du ROBOT (≠ vitesse des roues) ---
   // Recette B-Robot : quand le corps pivote, les roues et le centre de masse ne
   // vont pas à la même vitesse. Injecter la vitesse ROUE brute dans la boucle
   // externe, c'est lui mentir exactement au moment où elle compte (pendant un
-  // rattrapage). speedEstTilt_ = 0 ⇒ comportement d'avant (console `T`).
   // Le passe-bas évite que le bruit de la boucle interne remonte dans la consigne
   // d'angle : le B-Robot filtre à 0.9 @100 Hz, on fait le même τ à 200 Hz.
-  const float rawEstSpeed = motorSpeedMmS_ + speedEstTilt_ * gyroRate;
+  const float rawEstSpeed = motorSpeedMmS_;
   estSpeedMmS_ = SPEED_EST_FILTER * estSpeedMmS_ + (1.0f - SPEED_EST_FILTER) * rawEstSpeed;
 
   // --- Boucle externe (vitesse) : erreur de vitesse → angle de consigne ---
@@ -441,7 +428,7 @@ void Balance::update() {
   // reculer ses roues afin de se pencher. Sa réponse initiale va donc dans le
   // mauvais sens, et c'est la raison de fond pour laquelle `v` et `i` doivent
   // rester PETITS — une boucle externe rapide se bat contre sa propre réponse.
-  const float speedError = cmdSpeed + returnMmS - estSpeedMmS_;
+  const float speedError = cmdSpeed - estSpeedMmS_;
   const float speedIntegPrev = speedInteg_;
   speedInteg_ += speedError * LOOP_DT;
   speedInteg_ = constrain(speedInteg_, -SPEED_INTEG_LIMIT, SPEED_INTEG_LIMIT);
@@ -460,13 +447,6 @@ void Balance::update() {
     targetAngle = kpSpeed_ * speedError + kiSpeed_ * speedInteg_;
   }
   targetAngle = constrain(targetAngle, -leanMax, leanMax);
-  // Balancier volontaire (console `B`) : phase accumulee plutot que sinf(millis()),
-  // dont l'argument croissant perd sa precision au bout de quelques heures.
-  if (swayDeg_ != 0.0f) {
-    swayPhase_ += 2.0f * PI * SWAY_HZ * LOOP_DT;
-    if (swayPhase_ > 2.0f * PI) swayPhase_ -= 2.0f * PI;
-    targetAngle += swayDeg_ * sinf(swayPhase_);
-  }
   targetAngle += gestureAngleBias(now); // les gestes penchent brièvement le robot
   lastTargetDeg_ = targetAngle;
 
@@ -482,7 +462,7 @@ void Balance::update() {
   // statique sur le zéro d'assiette ; à kiAng_ = 0 le robot part en ligne droite
   // et tombe, quels que soient les autres gains. C'est l'équivalent exact du terme
   // proportionnel du B-Robot, dont la boucle sort une accélération intégrée.
-  const float angleError = pitchDeg_ - targetAngle - autoTrimDeg_;
+  const float angleError = pitchDeg_ - targetAngle;
   angleInteg_ += angleError * LOOP_DT;
   angleInteg_ = constrain(angleInteg_, -ANGLE_INTEG_LIMIT, ANGLE_INTEG_LIMIT); // anti-windup
   motorSpeedMmS_ = kpAng_ * angleError + kiAng_ * angleInteg_ + kdAng_ * gyroRate;
@@ -508,17 +488,6 @@ void Balance::update() {
     angleIntegSeed_ += (angleInteg_ - angleIntegSeed_) * (LOOP_DT / 2.0f);
   }
 
-  // --- Auto-trim du zéro θ₀ (recette Brokking self_balance_pid_setpoint) ---
-  // À l'arrêt commandé (et hors geste), une vitesse roue résiduelle = le robot roule
-  // pour rester sous son CdM → c'est le SIGNE de l'erreur sur θ₀. On décale TRÈS
-  // lentement le point d'équilibre pour l'annuler (θ₀ ← θ₀ − gain·v·dt). Désactivé si
-  // autoTrimGain_ == 0. Contre-réaction lente à NE PAS confondre avec Ki·∫θ (qui, lui,
-  // aggraverait un θ₀ faux) : elle porte sur la vitesse, pas l'angle. Cf. docs/TUNING.md.
-  if (autoTrimGain_ != 0.0f && cmdSpeed == 0.0f && cmdSteer == 0.0f && gestureOp_ == 0) {
-    autoTrimDeg_ -= autoTrimGain_ * motorSpeedMmS_ * LOOP_DT;
-    autoTrimDeg_ = constrain(autoTrimDeg_, -AUTO_TRIM_LIMIT_DEG, AUTO_TRIM_LIMIT_DEG);
-  }
-
   // --- Direction : différentiel gauche/droite ---
   const float steerMmS = steerToWheelMmS(cmdSteer + gestureSteerBias(now));
   applyWheels(motorSpeedMmS_ + steerMmS, motorSpeedMmS_ - steerMmS);
@@ -539,19 +508,6 @@ void Balance::applyWheels(float leftMmS, float rightMmS) {
   // au lieu de l'espérer.
   const long maxStep = max(1L, lroundf(maxAccelStepsS2_ * LOOP_DT));
   const bool force = forceReissue_;
-  // --- Dither optionnel (console `H`, 0 = off) ---
-  // Petite oscillation ajoutée à la consigne pour que la transmission ne soit
-  // JAMAIS à l'arrêt : c'est le remède classique au frottement statique et au
-  // JEU MÉCANIQUE, qui créent une zone morte exactement autour de la vitesse
-  // nulle — d'où un robot qui tient en mouvement et lâche au point zéro.
-  // Ajouté APRÈS la limitation d'accélération (sinon le limiteur le raboterait)
-  // et hors du cache `lastSps` (sinon il polluerait l'état du limiteur).
-  // Moyenne nulle par construction : aucune dérive.
-  if (++ditherTick_ >= DITHER_PERIOD_TICKS) {
-    ditherTick_ = 0;
-    ditherPhase_ = !ditherPhase_;
-  }
-  const long dither = ditherSps_ == 0 ? 0 : (ditherPhase_ ? ditherSps_ : -ditherSps_);
   // ─── Phase 1 : calculer les consignes des DEUX roues ────────────────────
   // Il faut les connaitre AVANT de decider quoi que ce soit, parce que le verrou
   // de la phase 2 compare le sens DEMANDE au sens ou va reellement la rampe.
@@ -572,11 +528,7 @@ void Balance::applyWheels(float leftMmS, float rightMmS) {
     // le vide : sa sortie n'atteint plus l'actionneur. C'est une boucle OUVERTE,
     // et c'est invisible autrement (cf. slewDuty).
     if (sps != want) slewClipped_ = true;
-    // Le dither doit etre COMMUN aux deux roues (avant/arriere), pas differentiel.
-    // Il est exprime en pas MOTEUR : il faut donc lui appliquer la meme inversion
-    // qu'a la consigne. Sans ca, +dither sur les deux moteurs = une roue avance et
-    // l'autre recule : une oscillation en LACET, pas en translation (22/08).
-    out = sps + (invert ? -dither : dither);
+    out = sps;
     // Plancher de vitesse a SIGNE PRESERVE (console `F`) : borne la latence de la
     // file d'impulsions, qui diverge quand la consigne tend vers zero (cf. Balance.h).
     // Applique apres le limiteur et hors du cache `lastSps`.
@@ -651,7 +603,7 @@ void Balance::applyWheels(float leftMmS, float rightMmS) {
     // cas d'un driver qu'on vient d'arreter (setMotorsEnabled), dont le cache ne
     // reflete plus l'etat reel.
     if (out == sentSps && !force && rs != RAMP_STATE_IDLE) return;
-    lastSps = sps;   // état du limiteur : SANS le dither
+    lastSps = sps;   // état du limiteur : SANS le plancher
     sentSps = out;   // ce qui part réellement au driver : AVEC
     if (out == 0) {
       // Seul cas où la vitesse n'est pas exprimable : setSpeedInHz(0) est invalide.
@@ -800,29 +752,33 @@ void Balance::onCommand(uint8_t op, const uint8_t* payload, size_t len) {
       driveNormalized(v, w, ttl);
       break;
     }
-    case OP_FORWARD: {
-      float cm = i16();
-      startTimedMotion(+CRUISE_SPEED_MM_S, 0.0f,
-                       (uint32_t)(fabsf(cm) * 10.0f / CRUISE_SPEED_MM_S * 1000.0f));
-      break;
-    }
+    // Déplacements SCRIPTÉS : ils roulent à la même vitesse que « manette à fond »
+    // (`P`/`R`). Une seule vitesse pour un seul robot — il y avait avant une
+    // « vitesse de croisière » distincte, qui divergeait de celle du téléguidage dès
+    // le premier réglage. La garde `<= 0` n'est pas décorative : la durée se calcule
+    // en divisant PAR la vitesse.
+    case OP_FORWARD:
     case OP_BACKWARD: {
-      float cm = i16();
-      startTimedMotion(-CRUISE_SPEED_MM_S, 0.0f,
-                       (uint32_t)(fabsf(cm) * 10.0f / CRUISE_SPEED_MM_S * 1000.0f));
+      const float v = teleopMaxSpeedMmS_;
+      if (v <= 0.0f) break;
+      const float mm = fabsf((float)i16()) * 10.0f;
+      startTimedMotion(op == OP_FORWARD ? +v : -v, 0.0f,
+                       (uint32_t)(mm / v * 1000.0f));
       break;
     }
     case OP_TURN: {
-      float deg = i16();
-      float rate = deg >= 0 ? TURN_RATE_DEG_S : -TURN_RATE_DEG_S;
-      startTimedMotion(0.0f, rate, (uint32_t)(fabsf(deg) / TURN_RATE_DEG_S * 1000.0f));
+      const float w = teleopMaxTurnDegS_;
+      if (w <= 0.0f) break;
+      const float deg = i16();
+      startTimedMotion(0.0f, deg >= 0 ? +w : -w,
+                       (uint32_t)(fabsf(deg) / w * 1000.0f));
       break;
     }
     case OP_LOOK: {
       // Petit coup d'œil = brève rotation sur place (gauche/droite seulement).
       uint8_t dir = len >= 1 ? payload[0] : LOOK_CENTER;
-      if (dir == LOOK_LEFT) startTimedMotion(0.0f, -TURN_RATE_DEG_S, 250);
-      else if (dir == LOOK_RIGHT) startTimedMotion(0.0f, +TURN_RATE_DEG_S, 250);
+      if (dir == LOOK_LEFT) startTimedMotion(0.0f, -teleopMaxTurnDegS_, 250);
+      else if (dir == LOOK_RIGHT) startTimedMotion(0.0f, +teleopMaxTurnDegS_, 250);
       break;
     }
     case OP_NOD:
@@ -925,7 +881,7 @@ float Balance::gestureSteerBias(uint32_t nowMs) {
   if (op != OP_WIGGLE) return 0.0f;
   const float t = (nowMs - start) / 1000.0f;
   if (t > 1.2f) { taskENTER_CRITICAL(&mux_); if (gestureOp_ == OP_WIGGLE) gestureOp_ = 0; taskEXIT_CRITICAL(&mux_); return 0.0f; }
-  return TURN_RATE_DEG_S * 1.4f * sinf(t * 3.0f * TWO_PI); // frétille gauche/droite
+  return teleopMaxTurnDegS_ * 1.4f * sinf(t * 3.0f * TWO_PI); // frétille gauche/droite
 }
 
 // ─────────────────────────────────────────────────────────────────────────

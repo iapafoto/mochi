@@ -47,15 +47,6 @@ class Balance {
   void setKdAng(float v) { kdAng_ = v; } // θ̇  → vitesse (amortissement) [console `e`]
   void setKpSpeed(float v) { kpSpeed_ = v; }
   void setKiSpeed(float v) { kiSpeed_ = v; }
-  void setKpPos(float v) { kpPos_ = v; }
-  // Gain auto-trim θ₀ [console `s`]. ⚠️ Mettre le gain à 0 EFFACE aussi le θ₀ déjà
-  // trouvé : sans ça, un `s 0` laissait un décalage fantôme (vu à +0.64° le 21/08)
-  // qui continuait de biaiser l'angle d'erreur sans plus aucun moyen de le corriger
-  // ni même de deviner d'où il venait, puisque le mécanisme était affiché « off ».
-  void setAutoTrimGain(float v) {
-    autoTrimGain_ = v;
-    if (v == 0.0f) autoTrimDeg_ = 0.0f;
-  }
   void setMaxAccel(float stepsS2);                      // accél. driver, en direct [console `n`]
   // Inclinaison max que la boucle externe peut demander pour se déplacer
   // [console `A`] : c'est le plafond d'accélération du robot (cf. config.h).
@@ -74,25 +65,12 @@ class Balance {
   // Vitesse roue maximale [console `V`] : autorité de rattrapage du contrôleur.
   void setMaxWheelSpeed(float mmS) { maxWheelSpeedMmS_ = constrain(mmS, 100.0f, 3000.0f); }
   float maxWheelSpeed() const { return maxWheelSpeedMmS_; }
-  // Correction « vitesse roue → vitesse robot » par l'inclinaison [console `T`].
-  void setSpeedEstTilt(float k) { speedEstTilt_ = constrain(k, -5.0f, 5.0f); }
-  float speedEstTilt() const { return speedEstTilt_; }
   // DLPF matériel du MPU [console `D`, valeurs 0..6]. L'écriture I2C est différée
   // au cœur 1 : le bus n'appartient qu'à la boucle d'équilibre.
   void setDlpf(uint8_t cfg) { dlpfRequest_ = cfg > 6 ? 6 : cfg; }
   uint8_t dlpf() const { return dlpfCfg_; }
   // Biais gyro suivi en continu (°/s), pour diagnostic depuis la console.
   float gyroBiasDps() const { return rateBias_; }
-  // Dither : petite oscillation de la consigne roue pour que la transmission ne
-  // soit jamais à l'arrêt [console `H`, en mm/s ; 0 = désactivé]. Remède classique
-  // au JEU MÉCANIQUE et au frottement statique, qui créent une zone morte autour
-  // de la vitesse nulle. ⚠️ À n'utiliser QU'APRÈS avoir vérifié le jeu à la main :
-  // le dither compense un défaut mécanique, il ne le répare pas — et il injecte
-  // de la vibration dans l'accéléromètre dont dépend toute la boucle.
-  void setDitherMmS(float mmS) {
-    ditherSps_ = lroundf(constrain(mmS, 0.0f, 100.0f) * STEPS_PER_MM);
-  }
-  float ditherMmS() const { return ditherSps_ / STEPS_PER_MM; }
   // Plancher de vitesse roue [console `F`, en mm/s ; 0 = desactive], SIGNE PRESERVE.
   // Motivation (23/08) : la latence de l'actionneur explose quand la consigne tend
   // vers zero. FastAccelStepper execute une file d'ordres d'impulsions ; la duree
@@ -104,23 +82,14 @@ class Balance {
   // DRIVER_MUTE_MIN_SPS (600 pas/s), soit au-dessus de toute cette zone.
   // Le plancher borne cette duree : floor pas/s => latence <= 1000/floor ms.
   // 200 pas/s (16 mm/s) => 5 ms, soit un tour de boucle. Il PRESERVE le signe, donc
-  // il ne force aucune inversion : contrairement au dither, c'est le controleur qui
-  // choisit le sens, on ne lui impose qu'une vitesse minimale pour l'exprimer.
+  // il ne force aucune inversion : c'est le controleur qui choisit le sens, on ne
+  // lui impose qu'une vitesse minimale pour l'exprimer.
   // (Une tentative anterieure a 8 pas/s avait echoue — trop bas pour borner quoi
   // que ce soit, elle n'ajoutait que les inconvenients.)
   void setSpeedFloorMmS(float mmS) {
     floorSps_ = lroundf(constrain(mmS, 0.0f, 200.0f) * STEPS_PER_MM);
   }
   float speedFloorMmS() const { return floorSps_ / STEPS_PER_MM; }
-  // Balancier volontaire [console `B`, amplitude en degres ; 0 = desactive].
-  // Oscillation lente ajoutee a la CONSIGNE D'ANGLE, donc en amont de toute la
-  // chaine : le robot se balance pour de vrai, il ne vibre pas. La vitesse roue
-  // qui en resulte a pour amplitude ~ kpAng x B, ce qui donne la correspondance
-  // avec l'autre garde-fou :  B ~ F / kpAng  (F=16 mm/s a kp=33,5  =>  B ~ 0,5 deg).
-  // Les deux expriment la meme exigence — ne jamais s'immobiliser au point zero —
-  // l'un au niveau de l'actionneur, l'autre au niveau de la consigne.
-  void setSwayDeg(float deg) { swayDeg_ = constrain(deg, 0.0f, 5.0f); }
-  float swayDeg() const { return swayDeg_; }
   // Poids du gyro dans la fusion d'angle (filtre complémentaire), en direct [console `y`].
   // Bas = plus d'accéléro = angle qui ne dérive pas (mais plus bruité en conduite).
   void setFilterCoef(float v) {
@@ -186,9 +155,6 @@ class Balance {
   float kdAng() const { return kdAng_; }
   float kpSpeed() const { return kpSpeed_; }
   float kiSpeed() const { return kiSpeed_; }
-  float kpPos() const { return kpPos_; }
-  float autoTrimGain() const { return autoTrimGain_; }
-  float autoTrimDeg() const { return autoTrimDeg_; } // θ₀ trouvé par l'auto-trim (deg)
   float maxAccel() const { return maxAccelStepsS2_; } // accél. driver courante (steps/s²)
   float filterCoef() const { return filterGyroCoef_; } // poids gyro fusion (console `y`)
   // Distance parcourue depuis l'ancre de position (mm, + = avant). Lisible du
@@ -227,7 +193,6 @@ class Balance {
     CUT_NONE = 0,
     CUT_ANGLE,      // chute franche : |θ| > FALL_LIMIT_DEG (normal)
     CUT_IMU_LOST,   // IMU_LOST_TICKS rejets I2C consécutifs → on ne sait plus où on est
-    CUT_RUNAWAY,    // dérive au-delà de l'ancre de position
     CUT_SATURATION, // roue commandée à fond en continu (patinage / roue en l'air)
   };
   struct CutInfo {
@@ -243,7 +208,7 @@ class Balance {
     return true;
   }
   uint16_t cutCount(uint8_t cause) const {
-    return cause < 5 ? cutCounts_[cause] : 0;
+    return cause < 4 ? cutCounts_[cause] : 0;
   }
 
   // ─── Santé de la boucle temps réel ──────────────────────────────────────
@@ -266,7 +231,7 @@ class Balance {
     wrongWayMs_ = 0;
     wrongWayCmd_ = 0;
     revForcedCount_ = 0;
-    for (uint8_t i = 0; i < 5; i++) cutCounts_[i] = 0;
+    for (uint8_t i = 0; i < 4; i++) cutCounts_[i] = 0;
   }
 
   // ─── Combien le contrôleur passe-t-il de temps en butée ? ───────────────
@@ -349,19 +314,13 @@ class Balance {
   FastAccelStepper* left_ = nullptr;
   FastAccelStepper* right_ = nullptr;
   MPU6050* mpu_ = nullptr;
-  long lastSpsL_ = 0; // état du limiteur d'accélération (consigne HORS dither)
+  long lastSpsL_ = 0; // état du limiteur d'accélération (consigne HORS plancher)
   long lastSpsR_ = 0;
-  long sentSpsL_ = 0; // ce qui est réellement parti au driver (dither compris) :
+  long sentSpsL_ = 0; // ce qui est réellement parti au driver (plancher compris) :
   long sentSpsR_ = 0; // c'est à ÇA que checkDriverFollows doit se comparer
-  // Dither optionnel autour de zéro (console `H`) — cf. applyWheels.
   // ⚠️ Valeur reelle posee par begin()/applyDefaultTuning depuis SPEED_FLOOR_MM_S,
   // qui n'est PAS nul : ce plancher corrige un defaut d'actionneur, pas un gout.
   volatile long floorSps_ = 0; // plancher de vitesse signe (console `F`)
-  volatile float swayDeg_ = 0.0f; // balancier volontaire (console `B`)
-  float swayPhase_ = 0.0f;
-  volatile long ditherSps_ = 0;
-  uint8_t ditherTick_ = 0;
-  bool ditherPhase_ = false;
   // Force le prochain applyWheels à ré-émettre, même si la consigne est identique :
   // après un setMotorsEnabled(false), le driver a été arrêté et le cache ci-dessus
   // ne décrit plus son état réel.
@@ -393,7 +352,6 @@ class Balance {
   // Dernière valeur de ∫θ observée en équilibre CALME : réinjectée au prochain
   // engagement pour ne pas re-payer la « dérive du départ » (cf. resetControl).
   float angleIntegSeed_ = 0.0f;
-  float autoTrimDeg_ = 0.0f;   // θ₀ trouvé par auto-trim (recette Brokking, cf. `s`)
 
   // --- Réglages à chaud (écrits cœur 0 par la console, lus cœur 1) ---
   volatile float kpAng_ = 0.0f;    // initialisés depuis config.h dans begin()
@@ -401,13 +359,10 @@ class Balance {
   volatile float kdAng_ = 0.0f;
   volatile float kpSpeed_ = 0.0f;
   volatile float kiSpeed_ = 0.0f;
-  volatile float kpPos_ = 0.0f;    // rappel vers l'ancre de position (0 = off)
-  volatile float autoTrimGain_ = 0.0f; // gain auto-trim θ₀ (0 = off) ; écrit cœur 0
   volatile float maxWheelSpeedMmS_ = MAX_WHEEL_SPEED_MM_S; // autorité de rattrapage [console `V`]
   volatile float maxLeanDeg_ = MAX_LEAN_DEG;         // inclinaison max en déplacement [console `A`]
   volatile float teleopMaxSpeedMmS_ = TELEOP_MAX_SPEED_MM_S; // fond de course [console `P`]
   volatile float teleopMaxTurnDegS_ = TELEOP_MAX_TURN_DEG_S; // fond de course [console `R`]
-  volatile float speedEstTilt_ = 0.0f; // k de estSpeed = v_roue + k·θ̇ [console `T`]
   float maxAccelStepsS2_ = 0.0f;   // accél. driver courante (set via begin() / console `n`)
   volatile float filterGyroCoef_ = FILTER_GYRO_COEF; // poids gyro fusion (console `y`)
   int32_t posAnchorSteps_ = 0;     // position mémorisée à l'engagement (pas)
@@ -451,7 +406,7 @@ class Balance {
   // cœur 1 → cœur 0 ; les compteurs survivent pour un bilan de fin de run.
   CutInfo cut_{};
   volatile bool cutPending_ = false;
-  uint16_t cutCounts_[5] = {0, 0, 0, 0, 0};
+  uint16_t cutCounts_[4] = {0, 0, 0, 0};
   // Ticks consécutifs passés avec la roue commandée à fond : au-delà de
   // RUNAWAY_SAT_MS, ce n'est plus un rattrapage, c'est un patinage.
   uint16_t satTicks_ = 0;

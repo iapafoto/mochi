@@ -122,16 +122,16 @@ des commandes FORWARD/TURN soient justes.
 | Opcode | Commande | Effet firmware |
 |---|---|---|
 | `0x00` STOP | arrêt | stoppe tout déplacement, **reste debout** (réflexe sécurité) |
-| `0x01` FORWARD `int16 cm` | avance | croisière avant, durée ≈ distance/vitesse |
+| `0x01` FORWARD `int16 cm` | avance | roule à `P` pendant distance/`P` |
 | `0x02` BACKWARD `int16 cm` | recule | idem, arrière |
-| `0x03` TURN `int16 deg` | pivote | rotation sur place (+ = droite) |
+| `0x03` TURN `int16 deg` | pivote | rotation sur place à `R` (+ = droite) |
 | `0x04` DRIVE `int8 %v, int8 %rot, uint8 ttl` | téléguidage | consigne CONTINUE, en % des fonds de course (`P`/`R`) ; **expire** après `ttl`×10 ms |
 | `0x10` NOD | oui | hochement avant/arrière (~1 s) |
 | `0x11` BOW | révérence | penche en avant puis se redresse |
 | `0x12` WIGGLE | dandine | frétille gauche/droite (~1,2 s) |
 | `0x20` LOOK `int8 dir` | coup d'œil | bref pivot (gauche/droite) |
 
-> FORWARD/BACKWARD sont **temporisés** (croisière pendant une durée calculée),
+> FORWARD/BACKWARD sont **temporisés** (vitesse `P` pendant une durée calculée),
 > pas asservis en distance absolue — suffisant pour une démo. Passer à un
 > asservissement par odométrie des pas si besoin de précision. (Le B-Robot, lui,
 > fait ça : un PD de position sur les pas dont la sortie **redevient** un

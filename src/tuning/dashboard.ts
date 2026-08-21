@@ -274,7 +274,7 @@ async function send(cmd: string, quiet = false) {
   // firmware (`g` = lecture d'état vs `G` = échelle gyro, `z` = zéro ici vs `Z` =
   // adopter le zéro suggéré par l'intégrale).
   const head = cmd.trim()[0];
-  if ('zynGZVTDHFBxAPR'.includes(head)) {
+  if ('zynGZVDFxAPR'.includes(head)) {
     window.setTimeout(() => send('g'), 200);
   }
 }
@@ -295,8 +295,6 @@ const GAINS: Gain[] = [
   { cmd: 'e', label: 'Amortissement',    hint: 'gyro θ̇ → vitesse (Kd) : freine le mouvement (terme ajouté)', step: 0.05, dec: 2, min: 0 },
   { cmd: 'v', label: 'Tenue de vitesse', hint: 'vitesse → angle de consigne (butée ±12°)',         step: 0.005,  dec: 4, min: 0 },
   { cmd: 'i', label: 'Anti-dérive',      hint: 'intégral lent de la boucle vitesse',               step: 0.0005, dec: 5, min: 0 },
-  { cmd: 'q', label: 'Ancre position',   hint: 'rappel vers le point de départ (borné 100 mm/s)',  step: 0.05,   dec: 2, min: 0 },
-  { cmd: 's', label: 'Auto-zéro',        hint: 'trim auto du point d\'équilibre (Brokking) : sol plat, sans contact', step: 0.0005, dec: 4, min: 0 },
   { cmd: 'o', label: 'Zéro',             hint: 'angle du point d\'équilibre (négatif possible)',   step: 0.1,    dec: 2, min: -90 },
   // Les deux réglages qui PLAFONNENT la nervosité — ils ne sont pas des gains du
   // PID, mais c'est souvent eux qui bloquent, pas les gains (cf. docs/TUNING.md).
@@ -305,14 +303,11 @@ const GAINS: Gain[] = [
   { cmd: 'G', label: 'Échelle gyro',     hint: 'clones MPU6050 : compare y 0.95 (accéléro, fiable) et y 0.9999 (gyro)', step: 0.05, dec: 3, min: 0.1, max: 10 },
   // Ajoutés le 21/08 avec la comparaison B-Robot (cf. docs/COMPARAISON.md).
   { cmd: 'V', label: 'Vitesse roue max', hint: 'autorité de rattrapage mm/s (B-Robot ~2160) : monter tant que les moteurs ne perdent pas de pas', step: 100, dec: 0, min: 100, max: 3000 },
-  { cmd: 'T', label: 'Vitesse ⟵ gyro',   hint: 'v_robot = v_roue + k·θ̇ (0 = off, B-Robot ~1) : amortit en plus de `e`', step: 0.1, dec: 2, min: 0, max: 5 },
   { cmd: 'D', label: 'DLPF MPU',         hint: 'filtre matériel : 3 = 44 Hz, 4 = 21 Hz, 5 = 10 Hz (réglage B-Robot)', step: 1, dec: 0, min: 0, max: 6 },
   // Ajoutés le 23/08 — la cause racine était côté ACTIONNEUR, pas côté gains :
   // FastAccelStepper reste bloqué quand la consigne roue passe par zéro (il doit
   // décélérer depuis une vitesse déjà nulle et ne finit jamais). Cf. docs/TUNING.md.
   { cmd: 'F', label: "Plancher vitesse", hint: "mm/s : empêche la consigne roue de s'immobiliser au point zéro. LE correctif du « il tombe à la verticale » — 4 suffit, plus haut ne fait qu'ajouter de la vibration", step: 1, dec: 0, min: 0, max: 100 },
-  { cmd: 'B', label: "Balancier",        hint: "degrés : oscillation volontaire de la consigne d'angle à 1,5 Hz. Même exigence que F, exprimée en amont (B ≈ F/Kp)", step: 0.1, dec: 2, min: 0, max: 5 },
-  { cmd: 'H', label: "Dither",           hint: "mm/s : vibration de la consigne contre le JEU mécanique. Vérifier le jeu à la main avant de s'en servir", step: 5, dec: 0, min: 0, max: 100 },
   // Conduite — ce ne sont pas des gains, mais c'est ce qui plafonne le déplacement.
   { cmd: 'A', label: "Penche max",       hint: "degrés : inclinaison autorisée pour se déplacer = plafond d'accélération. Le monter si le robot « refuse » d'avancer (B-Robot : 14 normal, 26 pro)", step: 1, dec: 0, min: 1, max: 30 },
   { cmd: 'P', label: "Manette : vitesse",  hint: 'mm/s à fond de course, pour un pilote qui envoie des % (app, manette). Le pad ci-dessus a son propre curseur', step: 25, dec: 0, min: 0, max: 2000 },
@@ -321,22 +316,22 @@ const GAINS: Gain[] = [
 
 const gainVal: Record<string, number> = {};
 
-// printState : "[tune] p=0.000 d=66.000 v=0.0250 i=0.00100 q=0.400 o=+0.81 e=0.000 axe=…"
+// printState : "[tune] p=200.000 d=40.500 v=0.0170 i=0.00300 o=+20.96 e=0.300 axe=y ks=+1 …"
 // `e=` (amortissement Kd) est en fin de bloc → optionnel dans le regex (compat firmware ancien).
-const RE_GAINS = /(?:^|\s)p=([\d.]+)\s+d=([\d.]+)\s+v=([\d.]+)\s+i=([\d.]+)\s+q=([\d.]+)\s+o=([-+][\d.]+)(?:\s+e=([\d.]+))?/;
+// ⚠️ `q=` (ancre de position) a été RETIRÉ du firmware, mais reste TOLÉRÉ ici : un
+// firmware d'avant le ménage affiche encore le champ, et si le regex l'exigeait —
+// ou le refusait — plus aucun réglage ne se parserait et le panneau entier resterait
+// à « — ». Un lecteur doit survivre aux deux versions de ce qu'il lit.
+const RE_GAINS = /(?:^|\s)p=([\d.]+)\s+d=([\d.]+)\s+v=([\d.]+)\s+i=([\d.]+)(?:\s+q=[\d.]+)?\s+o=([-+][\d.]+)(?:\s+e=([\d.]+))?/;
 // `s=`, `y=` et `acc=` sont plus loin dans la ligne printState (bloc télémétrie
 // après le `|`) → captés à part, et tolérants à un firmware plus ancien.
 const RE_TAIL: Record<string, RegExp> = {
-  s: /\ss=([\d.]+)/,
   y: /\sy=([\d.]+)/,
   n: /\sacc=([\d.]+)/, // la commande est `n`, le champ imprimé s'appelle `acc`
   G: /\sgs=([\d.]+)/,  // échelle gyro (clones MPU6050)
   V: /\sV=([\d.]+)/,   // vitesse roue max (autorité de rattrapage)
-  T: /\sT=([\d.]+)/,   // correction v_robot ← gyro
   D: /\sD=(\d+)/,      // DLPF matériel du MPU
-  H: /\sH=([\d.]+)/,   // dither (jeu mécanique)
   F: /\sF=([\d.]+)/,   // plancher de vitesse roue
-  B: /\sB=([\d.]+)/,   // balancier volontaire
   A: /\sA=([\d.]+)/,   // inclinaison max en déplacement
   P: /\sP=([\d.]+)/,   // fond de course vitesse (manette)
   R: /\sR=([\d.]+)/,   // fond de course rotation (manette)
@@ -345,8 +340,8 @@ const RE_TAIL: Record<string, RegExp> = {
 function parseGains(line: string): void {
   const m = line.match(RE_GAINS);
   if (!m) return;
-  ['p', 'd', 'v', 'i', 'q', 'o'].forEach((k, i) => { gainVal[k] = parseFloat(m[i + 1]); });
-  if (m[7] !== undefined) gainVal['e'] = parseFloat(m[7]);
+  ['p', 'd', 'v', 'i', 'o'].forEach((k, i) => { gainVal[k] = parseFloat(m[i + 1]); });
+  if (m[6] !== undefined) gainVal['e'] = parseFloat(m[6]);
   for (const [k, re] of Object.entries(RE_TAIL)) {
     const mt = line.match(re);
     if (mt) gainVal[k] = parseFloat(mt[1]);
