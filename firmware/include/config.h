@@ -395,6 +395,20 @@ constexpr float DRIVER_MUTE_MS = 60.0f;
 // 1,5 Hz est choisi SOUS la frequence propre du pendule (1/(2*pi*tau) ~ 2,4 Hz a
 // tau = 66 ms) : assez lent pour que le robot suive, assez rapide pour que rien ne
 // s'immobilise. S'en approcher ferait resonner.
+// ═══ PLANCHER DE VITESSE ROUE (console `F`) — N'EST PAS UN REGLAGE DE GOUT ═══
+// C'est le contournement d'un DEFAUT D'ACTIONNEUR, d'ou un defaut d'usine non nul.
+// FastAccelStepper s'enlise des que la consigne roue passe par zero : sa rampe doit
+// deceler depuis une vitesse DEJA nulle vers zero et ne declare jamais avoir fini
+// (mesure au banc : ramp=DECELERATE, reel=-1 pas/s, consigne=+1180, pendant >60 ms).
+// Or la consigne passe par zero EXACTEMENT au point d'equilibre — d'ou le symptome
+// « il tient en mouvement puis lache a la verticale », qui a resiste des mois.
+//
+// 4 mm/s = 48 pas/s. Ce n'est PAS un reglage de latence : a 48 pas/s un ordre de file
+// dure encore 20 ms, autant que sans plancher. Il suffit d'eviter l'etat degenere,
+// rien de plus — d'ou l'inutilite de monter (F 16 tient aussi, mais vibre).
+// Valide au banc le 23/08 : premier etat ou le robot ne tombe plus.
+constexpr float SPEED_FLOOR_MM_S = 4.0f;
+
 constexpr float SWAY_HZ = 1.5f;
 
 constexpr uint8_t REVERSE_MAX_TICKS = 8;

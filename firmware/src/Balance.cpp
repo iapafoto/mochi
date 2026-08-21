@@ -65,9 +65,14 @@ void Balance::applyDefaultTuning() {
   setMaxAccel(MAX_ACCEL_STEPS_S2);
   setFilterCoef(FILTER_GYRO_COEF); // poids gyro de la fusion d'angle (console `y`)
   maxWheelSpeedMmS_ = MAX_WHEEL_SPEED_MM_S; // autorité de rattrapage (console `V`)
+  setSpeedFloorMmS(SPEED_FLOOR_MM_S); // plancher anti-enlisement (console `F`)
   speedEstTilt_ = SPEED_EST_TILT_MM_S_PER_DPS; // correction v_robot ≠ v_roue (console `T`)
   setDlpf(MPU_DLPF_CFG);          // appliqué au prochain tick du cœur 1 (console `D`)
   setDitherMmS(0.0f);             // dither désactivé par défaut (console `H`)
+  setSwayDeg(0.0f);               // balancier désactivé par défaut (console `B`)
+  // ⚠️ NON NUL par défaut, et c'est volontaire : sans lui le robot tombe au point
+  // d'équilibre (cf. SPEED_FLOOR_MM_S). Un `f` doit le RÉTABLIR, pas l'effacer.
+  setSpeedFloorMmS(SPEED_FLOOR_MM_S);
 }
 
 void Balance::zeroOffsetHere() {

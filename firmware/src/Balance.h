@@ -327,6 +327,8 @@ class Balance {
   long sentSpsL_ = 0; // ce qui est réellement parti au driver (dither compris) :
   long sentSpsR_ = 0; // c'est à ÇA que checkDriverFollows doit se comparer
   // Dither optionnel autour de zéro (console `H`) — cf. applyWheels.
+  // ⚠️ Valeur reelle posee par begin()/applyDefaultTuning depuis SPEED_FLOOR_MM_S,
+  // qui n'est PAS nul : ce plancher corrige un defaut d'actionneur, pas un gout.
   volatile long floorSps_ = 0; // plancher de vitesse signe (console `F`)
   volatile float swayDeg_ = 0.0f; // balancier volontaire (console `B`)
   float swayPhase_ = 0.0f;
