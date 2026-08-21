@@ -118,10 +118,18 @@ constexpr uint8_t MPU_DLPF_CFG = 3;
 
 // Offset d'assiette : angle du MPU quand le robot est réellement à l'équilibre
 // (jamais parfaitement 0 à cause du montage). À ajuster à ±0.1° près.
-// Valeur MESURÉE au banc sur ce châssis (session du 21/08) : la remettre en défaut
-// pour qu'un `f` (défauts usine) rende un robot immédiatement utilisable au lieu
-// d'un zéro faux de 3°. À re-trimmer (`z` puis `w`) si la mécanique bouge.
-constexpr float BALANCE_OFFSET_DEG = -2.96f;
+// Valeur MESURÉE au banc, relevée sur le run de recette (10 min sans chute) : un
+// `f` (défauts usine) doit rendre un robot immédiatement utilisable. À re-trimmer
+// (`z` puis `w`) si la mécanique bouge.
+// ⚠️ SOLIDAIRE DE `DEFAULT_PITCH_SIGN` ci-dessous : l'offset est mesuré DANS une
+// convention de signe. Changer l'un sans l'autre donne un zéro faux de deux fois
+// l'offset. Les deux ont changé ensemble (le montage se lit `a y`, plus `a -y`).
+// ⚠️ +21° n'est pas une anomalie : le MPU est monté incliné, et l'inclinaison de
+// la carte autour de l'axe de tangage est LIBRE (cf. `a`) — c'est `o` qui l'absorbe.
+// Confirmation que ce zéro est juste : au banc `o* = +21.02` contre `o = +20.96`,
+// soit 0,06° que l'intégrale compense en permanence. C'est la signature d'un zéro
+// correct — quand `o*` s'éloigne de `o`, c'est là qu'il faut refaire un `Z`.
+constexpr float BALANCE_OFFSET_DEG = 20.96f;
 
 // --- Orientation du MPU (faits physiques du montage) ---
 // Rechargés par `f`/defauts usine (via applyDefaultTuning) pour reproduire un
@@ -136,8 +144,15 @@ constexpr float BALANCE_OFFSET_DEG = -2.96f;
 //   inversé → terme D anti-amortisseur si faux, corrigeable `k`).
 // Montage courant : `a -y` ⇒ AXIS=1, SIGN=-1. Vérifier RATE_SIGN via `k` après flash.
 constexpr uint8_t DEFAULT_PITCH_AXIS = 1;   // Y
-constexpr int8_t  DEFAULT_PITCH_SIGN = -1;  // ⇒ axe = -y
-constexpr int8_t  DEFAULT_RATE_SIGN = 1;    // à confirmer au banc (`k`)
+constexpr int8_t  DEFAULT_PITCH_SIGN = 1;   // ⇒ axe = y  (relevé au banc : `axe=y`)
+constexpr int8_t  DEFAULT_RATE_SIGN = 1;    // à confirmer au banc (`k`) — cf. ⚠️ ci-dessous
+// ⚠️ `DEFAULT_PITCH_SIGN` était à -1 alors que le robot tourne à +1 : un `f` aurait
+// retourné la polarité de TOUTE la boucle (pitchSign_ multiplie l'angle ET le gyro),
+// c'est-à-dire un robot qui FONCE DANS LE SENS DE SA CHUTE. C'est le piège n°1 de
+// docs/TUNING.md, et il était armé dans les défauts d'usine.
+// ⚠️ `DEFAULT_RATE_SIGN` reste le seul fait de calibration que `g` N'AFFICHE PAS :
+// impossible de vérifier qu'il correspond au banc sans le lire en NVS. À ajouter
+// dans printState.
 // Correctif d'ÉCHELLE du gyro (console `G`). 1.0 = on fait confiance à la lib.
 // Utile parce que beaucoup de MPU6050 vendus sont des clones qui IGNORENT le
 // registre GYRO_CONFIG : la lib croit être en ±500 °/s et divise par 65,5 alors
@@ -160,7 +175,10 @@ constexpr float GYRO_SCALE = 1.0f;
 // Brokking `pid_d=30` multiplie (err−err_préc)=θ̇·dt (dt=4 ms) ⇒ gain effectif par
 // °/s = 30×0.004 = 0.12. Ici Kd multiplie gyroRate (°/s) DIRECTEMENT ⇒ l'équivalent
 // Brokking est Kd ≈ 0.008·Kp ≈ 0.3 (pour Kp=40), PAS 20-30 (qui saturent la roue dès
-// ~23 °/s). Mesuré au banc : 0.1 passe sans buzz, 0.3 siffle → on garde 0.1.
+// ~23 °/s). Un premier passage au banc avait conclu « 0.1 passe sans buzz, 0.3
+// siffle → on garde 0.1 » ; le run de recette tourne à 0.3 sans siffler. Ce qui a
+// changé entre les deux, c'est le plancher `F` : le sifflement venait de
+// l'actionneur qui s'enlisait, pas du gain d'amortissement.
 //
 // ═══ KI_ANGLE : LE TERME QUI MANQUAIT (21/08, cf. docs/COMPARAISON.md §1) ═══
 // Le B-Robot ESP32 sort une ACCÉLÉRATION qu'il intègre (`control_output += PD`).
@@ -180,9 +198,13 @@ constexpr float GYRO_SCALE = 1.0f;
 // faux : dans la forme vitesse, Ki·∫θ N'EST PAS un intégrateur en concurrence,
 // c'est l'équivalent EXACT du terme proportionnel de la forme accélération.
 // Valeur retenue : même ratio Ki/Kp que le B-Robot (6.4 s⁻¹) ⇒ Ki ≈ 6.4·Kp.
-constexpr float KP_ANGLE = 33.5f;  // θ  → vitesse (raideur ; valeur du banc)
-constexpr float KI_ANGLE = 200.0f; // ∫θ → vitesse (≈ 6.4·Kp — TERME DOMINANT, cf. ci-dessus)
-constexpr float KD_ANGLE = 0.1f;   // θ̇  → vitesse (amortissement ; valeur du banc)
+// Valeurs du run de recette (10 min sans chute, statique + téléguidage).
+// ⚠️ Le ratio Ki/Kp vaut ici 200/40.5 = 4.9 s⁻¹, et non les 6.4 du B-Robot. C'est
+// ce qui marche sur CE châssis (τ = 66 ms, deux fois plus court que le sien) : la
+// cible de 6.4 était un point de départ, pas une consigne.
+constexpr float KP_ANGLE = 40.5f;  // θ  → vitesse (raideur ; valeur du banc)
+constexpr float KI_ANGLE = 200.0f; // ∫θ → vitesse (TERME DOMINANT, cf. ci-dessus)
+constexpr float KD_ANGLE = 0.3f;   // θ̇  → vitesse (amortissement ; valeur du banc)
 // Borne anti-windup de l'intégrateur d'angle ∫θ (en deg·s). ⚠️ À RECALER AVEC Ki :
 // à Ki=200, ±3 deg·s = ±600 mm/s d'autorité intégrale (ordre de grandeur du
 // B-Robot). L'ancien ±20 laissait passer ±4000 mm/s, soit un windup incontrôlable.
@@ -328,12 +350,14 @@ constexpr float RUNAWAY_SAT_MS = 1500.0f;
 // 25 000 pas/s ⇒ 7.8 tr/s ⇒ ~2160 mm/s : TROIS FOIS notre ancienne limite. Une
 // autorité de rattrapage trop faible est une cause classique de « il corrige mais
 // il n'y arrive jamais » — le contrôleur demande, la roue ne suit pas.
-// À 1400 mm/s on demande 17 000 pas/s au 1/16 (≈ 5.3 tr/s) : c'est le domaine où un
-// A4988 en 12 V commence à décrocher sur un NEMA17. Réglable EN DIRECT (console `V`) :
-// monter tant que les moteurs ne perdent pas de pas. Si ça décroche, passer les
-// cavaliers en 1/8 et MICROSTEPS=8 (c'est le réglage livré du B-Robot ESP32) :
-// même vitesse pour deux fois moins de pas/s.
-constexpr float MAX_WHEEL_SPEED_MM_S = 1400.0f; // vitesse linéaire max d'une roue
+// RAMENÉ 1400 → 900 : la géométrie MESURÉE a remplacé la comparaison. Avec
+// τ = 66 ms, le Δv nécessaire pour rattraper 10° vaut 340 mm/s — 900 est donc déjà
+// large, et 1400 n'achetait rien qu'un domaine où l'A4988 décroche (17 000 pas/s au
+// 1/16 sur un NEMA17 en 12 V). Un pas-à-pas décroché ne rend AUCUN couple : au-delà
+// du décrochage, monter `V` retire de l'autorité au lieu d'en ajouter.
+// Réglable EN DIRECT (console `V`). Si ça décroche, passer les cavaliers en 1/8 et
+// MICROSTEPS=8 (le réglage livré du B-Robot) : même vitesse, deux fois moins de pas/s.
+constexpr float MAX_WHEEL_SPEED_MM_S = 900.0f; // vitesse linéaire max d'une roue
 // Accélération du driver (rampe FastAccelStepper). ⚠️ POINT CRITIQUE de l'équilibre :
 // les robots de référence à pas-à-pas (Brokking YABR, rekomerio) écrivent la fréquence
 // de pas DIRECTEMENT, sans rampe — la roue change de vitesse quasi instantanément. Une
@@ -351,13 +375,19 @@ constexpr float MAX_WHEEL_SPEED_MM_S = 1400.0f; // vitesse linéaire max d'une r
 // est proportionnel à l'ACCÉLÉRATION. À 14 m/s² on demande 2,3× la référence B-Robot.
 // Et un pas perdu est invisible du contrôleur : il croit rouler à la vitesse commandée
 // alors que la roue décroche → l'angle part sans que la commande ne le voie.
-// Ordre des essais (console `n`, en direct) : 100000, puis 70000 (= le B-Robot).
+// TRANCHÉ, et ce n'est plus un essai à l'aveugle : la géométrie mesurée (1,1 kg,
+// CdM à 8,5 cm, l = 4,3 cm, τ = 66 ms) donne une FENÊTRE. Plancher 40 600 pas/s²
+// (en dessous, la limite d'accélération écrête la sortie du contrôleur à d = 40) ;
+// plafond 123 000 pas/s² (au-delà, le couple demandé dépasse ce que les moteurs
+// rendent à 1,1 kg, donc pas perdus). Réglé à 75 000 pas/s², au milieu — soit
+// ~6,2 m/s², c'est-à-dire très exactement l'ordre de grandeur du B-Robot (~6).
+// L'ancienne valeur (14 m/s² ≈ 170 000 pas/s²) était AU-DESSUS du plafond de couple.
 // Si le robot redevient « mou » avant que les pas cessent d'être perdus, c'est le
 // couple qui manque, pas le réglage → 1/8 de pas et/ou Vref des A4988.
 //
 // Exprimé en mm/s² et converti : sinon, passer MICROSTEPS de 16 à 8 DOUBLERAIT
 // silencieusement l'accélération physique pour la même constante en pas/s².
-constexpr float MAX_ACCEL_MM_S2 = 14000.0f; // ~14 m/s² (valeur du banc au 21/08)
+constexpr float MAX_ACCEL_MM_S2 = 6185.0f; // ≈ 75 000 pas/s² (valeur du banc), ~6,2 m/s²
 constexpr float MAX_ACCEL_STEPS_S2 = MAX_ACCEL_MM_S2 * STEPS_PER_MM;
 
 // Rampe INTERNE du driver, volontairement quasi instantanée (22/08).
