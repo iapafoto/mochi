@@ -162,6 +162,91 @@ class Balance {
   float traveledMm() const {
     return (forwardSteps() - posAnchorSteps_) / STEPS_PER_MM;
   }
+
+  // ─── ODOMÉTRIE : où le robot croit être allé ────────────────────────────
+  // Cinématique différentielle, dans les deux sens de lecture. La COMMANDE s'en
+  // sert déjà (`steerToWheelMmS` convertit un pivot en écart de vitesse roue) ;
+  // ici on referme le circuit en la lisant à l'envers :
+  //     avance   d      = (d_gauche + d_droite) / 2
+  //     lacet    θ_rad  = (d_gauche − d_droite) / WHEEL_BASE_MM     (+ = droite)
+  // avec d_roue = pas / STEPS_PER_MM. Ancre remise à zéro par `resetOdometry()`,
+  // distincte de `posAnchorSteps_` — celle-ci suit le robot pendant un déplacement
+  // commandé (cf. update()), donc elle mesure la DÉRIVE SUBIE et ne pourrait pas
+  // mesurer un trajet voulu.
+  //
+  // ⚠️ CE QUE CES CHIFFRES NE DISENT PAS, et qu'il faut savoir avant de s'y fier :
+  //  • Ce sont des pas COMMANDÉS, pas des pas FAITS. `getCurrentPosition()` compte
+  //    ce que le générateur de rampe a émis ; un décrochage moteur est invisible
+  //    ici. C'est `drvMuteCount`/`wrongWayMs` qui le voient — les regarder ENSEMBLE.
+  //  • L'odométrie suit le POINT DE CONTACT, pas le corps. Le corps est à
+  //    x_roue + L·sin(θ) : sur un pendule inversé, avancer commence par reculer les
+  //    roues pour se pencher. Les deux ne coïncident QUE si le robot part debout et
+  //    arrive debout À L'ARRÊT — d'où : mesurer entre deux états de repos.
+  //  • Le plancher `F` (SPEED_FLOOR_MM_S) interdit la vitesse roue nulle : à
+  //    l'équilibre les roues avancent-reculent en permanence. Ça se compense en
+  //    moyenne mais ça ajoute une marche aléatoire — le plancher de bruit est de
+  //    l'ordre du centimètre, inutile d'espérer mieux.
+  float odoForwardMm() const {
+    return (forwardSteps() - odoFwdAnchor_) / STEPS_PER_MM;
+  }
+  // Lacet vu par les ROUES. Dépend de WHEEL_BASE_MM, et souffre du patinage
+  // latéral du pivot sur place (les pneus frottent).
+  float odoYawWheelDeg() const {
+    return ((turnSteps() - odoTurnAnchor_) / STEPS_PER_MM) *
+           ((float)RAD_TO_DEG / WHEEL_BASE_MM);
+  }
+  // Lacet vu par le GYRO — source INDÉPENDANTE, qui ignore le patinage et ne doit
+  // rien à WHEEL_BASE_MM. C'est ce qui rend la voie effective mesurable : sur un
+  // pivot franc, l'écart entre les deux EST l'erreur d'échelle de la voie.
+  float odoYawGyroDeg() const { return yawGyroDeg_; }
+  float yawRateDps() const { return lastYawRate_; }
+  // Biais du canal de lacet, en °/s. À SURVEILLER : c'est lui qui, resté invisible,
+  // a fait annoncer une dérive de cap de 91° sur une ligne droite. Robot posé et
+  // immobile, il doit tomber près de 0 en quelques secondes.
+  float yawBiasDps() const { return yawBias_; }
+  // Exécutée par le cœur 1 : les trois compteurs doivent repartir du MÊME instant,
+  // sinon la comparaison roues/gyro démarre déjà faussée.
+  void resetOdometry() { odoResetRequest_ = true; }
+  // ─── DÉPLACEMENT MESURÉ (calibration, console `M` / `T`) ────────────────
+  // « Avance de 2 m puis arrête-toi », au lieu de piloter à la main et d'essayer
+  // de lâcher au bon endroit. L'un des deux arguments doit être nul : soit une
+  // ligne droite, soit un pivot.
+  //
+  // ⚠️ CE N'EST PAS UN ASSERVISSEMENT DE POSITION, et il ne faut pas le prendre
+  // pour tel. La commande retombe à zéro quand l'odométrie atteint la cible, puis
+  // le robot s'arrête comme il peut — avec un dépassement de l'ordre de v·τ. C'est
+  // SANS IMPORTANCE pour l'usage visé : le résultat annonce ce que l'odométrie a
+  // réellement compté, dépassement inclus, et c'est CE nombre qu'on compare au
+  // mètre ruban. Deux mesures, jamais une mesure contre une supposition.
+  // (La vraie boucle fermée sur la position reste à écrire ; elle sera une
+  // quatrième couche en cascade, et devra être plus douce que la boucle vitesse.)
+  //
+  // Toute intervention humaine ANNULE le déplacement : `stopMotion`, le pad, une
+  // commande `u`, une chute. Cf. startTimedMotion / resetControl.
+  void startOdoMove(float mm, float deg);
+  bool odoMoveActive() const { return odoPhase_ != 0; }
+  enum MoveEnd : uint8_t {
+    MOVE_REACHED = 0, // cible d'odométrie atteinte
+    MOVE_TIMEOUT = 1, // budget de temps épuisé — roue bloquée ? patinage ?
+  };
+  struct MoveInfo {
+    float askedMm, askedDeg;              // ce qui a été demandé
+    float gotMm, gotWheelDeg, gotGyroDeg; // ce que l'odométrie a compté
+    uint8_t reason;                       // MoveEnd
+  };
+  // Consomme le résultat en attente (cœur 0). false s'il n'y en a pas.
+  bool takeMoveEvent(MoveInfo& out) {
+    if (!movePending_) return false;
+    out = move_;
+    movePending_ = false;
+    return true;
+  }
+
+  // Sens du lacet gyro vs la convention maison « + = droite » [console `K`].
+  // Même statut que `rateSign_` : un FAIT DE MONTAGE, qui se constate au banc en
+  // pivotant le robot à la main et en regardant si les deux lacets s'accordent.
+  void setYawSign(int8_t s) { yawSign_ = s; }
+  int8_t yawSign() const { return yawSign_; }
   float offsetDeg() const { return offsetDeg_; }
   uint8_t pitchAxis() const { return pitchAxis_; }
   int8_t pitchSign() const { return pitchSign_; }
@@ -306,7 +391,17 @@ class Balance {
     const int32_t r = right_ ? right_->getCurrentPosition() : 0;
     return ((invertLeft_ ? -l : l) + (invertRight_ ? -r : r)) / 2;
   }
+  // DIFFÉRENCE des deux roues, en pas signés. Pas de division par 2 ici : c'est
+  // (d_gauche − d_droite) tel quel, le numérateur de θ = Δd/B. Le signe suit la
+  // convention de `steerToWheelMmS` (qui ajoute le pivot à GAUCHE et le retranche
+  // à DROITE), donc + = pivot à droite — même sens que `cmdSteer_`.
+  int32_t turnSteps() const {
+    const int32_t l = left_ ? left_->getCurrentPosition() : 0;
+    const int32_t r = right_ ? right_->getCurrentPosition() : 0;
+    return (invertLeft_ ? -l : l) - (invertRight_ ? -r : r);
+  }
   void startTimedMotion(float speedMmS, float steerDegS, uint32_t durationMs);
+  void odoMoveTick(uint32_t nowMs); // machine à états du déplacement mesuré
   void triggerGesture(uint8_t op);
   float gestureAngleBias(uint32_t nowMs); // non-const : efface gestureOp_ en fin de geste
   float gestureSteerBias(uint32_t nowMs);
@@ -366,6 +461,26 @@ class Balance {
   float maxAccelStepsS2_ = 0.0f;   // accél. driver courante (set via begin() / console `n`)
   volatile float filterGyroCoef_ = FILTER_GYRO_COEF; // poids gyro fusion (console `y`)
   int32_t posAnchorSteps_ = 0;     // position mémorisée à l'engagement (pas)
+  // --- Odométrie (ancres écrites cœur 1, lues cœur 0 : int32/float alignés) ---
+  int32_t odoFwdAnchor_ = 0;
+  int32_t odoTurnAnchor_ = 0;
+  float yawGyroDeg_ = 0.0f;        // intégrale du lacet gyro depuis l'ancre
+  float yawBias_ = 0.0f;           // biais du lacet, suivi comme rateBias_
+  float lastYawRate_ = 0.0f;       // dernière vitesse de lacet utilisée (deg/s)
+  volatile int8_t yawSign_ = 1;    // sens du lacet gyro (console `K`)
+  volatile bool odoResetRequest_ = false; // cœur 0 → cœur 1
+  // --- Déplacement mesuré (cf. startOdoMove). Phase écrite sous `mux_`. ---
+  // 0 = inactif · 1 = demandé (cœur 0) · 2 = en route · 3 = stabilisation.
+  // Le cœur 1 possède les transitions 1→2→3→0 ; le cœur 0 ne fait que poser 1
+  // (départ) ou 0 (annulation), ce qui rend toute annulation immédiate.
+  volatile uint8_t odoPhase_ = 0;
+  volatile float odoGoalMm_ = 0.0f;
+  volatile float odoGoalDeg_ = 0.0f;
+  volatile uint32_t odoDeadlineMs_ = 0;
+  uint32_t odoSettleAtMs_ = 0;
+  uint8_t odoEndReason_ = 0;
+  MoveInfo move_{};
+  volatile bool movePending_ = false;
   volatile float offsetDeg_ = 0.0f;
   // Fusion d'angle MAISON (cf. Balance.cpp) : atan2 sur les deux axes accéléro du
   // plan de tangage → plage ±180° sans repli, quelle que soit l'orientation du MPU.
@@ -387,6 +502,7 @@ class Balance {
   // rotation quasi nulle ≥3 s → le résidu lu est replié dans les offsets du MPU.
   float biasEstX_ = 0.0f;
   float biasEstY_ = 0.0f;
+  float biasEstZ_ = 0.0f; // ⚠️ ajouté 23/08 : Z n'était corrigé nulle part
   uint16_t biasSamples_ = 0;
   // Suivi PERMANENT du biais gyro sur l'axe de tangage (recette B-Robot) : actif
   // aussi pendant l'équilibre, contrairement à l'apprentissage ci-dessus. Exprimé

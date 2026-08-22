@@ -4,6 +4,246 @@
 > Meilleur résultat à date : **22 s d'équilibre continu** (run 11), avec une
 > phase parfaitement posée de 8,5 s (pitch ±2°, roues quasi immobiles).
 
+## 📐 23/08 (2) — odométrie : de quoi commander « avance de 50 cm »
+
+Prérequis à des trajectoires programmées. `OP_FORWARD`/`OP_TURN` existaient déjà,
+mais **au chronomètre** : `durée = distance / vitesse`. Ça suppose que le robot
+atteint `cmdSpeed` tout de suite et le tient — or la boucle externe est
+délibérément lente (non minimum de phase) et son intégrale a une constante de
+`KP_SPEED/KI_SPEED` ≈ **5,7 s**. Sur un déplacement de 1-2 s elle n'a pas le temps
+d'agir : le robot ne croise jamais son régime établi. Le chrono ne peut donc pas
+être juste, et surtout **on ne sait pas de combien il est faux**.
+
+D'où cette étape : mesurer, avant d'asservir.
+
+### La cinématique, dans les deux sens
+
+Pour un différentiel à deux roues, avec `d = pas / STEPS_PER_MM` :
+
+```
+avance :  d      = (d_gauche + d_droite) / 2
+lacet  :  θ_rad  = (d_gauche − d_droite) / WHEEL_BASE_MM      (+ = droite)
+```
+
+La lecture **inverse** était déjà en service depuis le début — `steerToWheelMmS()`
+convertit un pivot en écart de vitesse roue avec exactement la même formule.
+Autrement dit `WHEEL_BASE_MM` pilotait déjà toutes les rotations commandées, alors
+qu'elle n'avait **jamais été mesurée** (150 mm, avec un commentaire « à mesurer »).
+Relevée entre bandes de roulement : **158 mm** — soit 5 % de pivot manquant sur
+chaque virage, `R` et `OP_TURN` compris.
+
+### Deux sources pour le lacet, une seule pour l'avance
+
+L'odométrie de rotation est le maillon faible : elle dépend de `WHEEL_BASE_MM` *et*
+souffre du patinage latéral du pivot sur place. Le gyro, lui, mesure le lacet
+directement — sans constante mécanique et sans se soucier du glissement.
+
+La difficulté est que **l'axe de lacet du robot n'est aucun des trois axes de la
+puce** : l'inclinaison de la carte autour de l'essieu est libre (c'est le principe
+du montage, absorbé par `o`). Mais cette inclinaison est déjà connue — c'est
+`fusedDeg_`, l'angle de la gravité dans le plan de tangage, que la fusion suit en
+permanence. Le lacet est la projection du vecteur gyro sur cette verticale.
+**Aucune constante nouvelle** : le capteur se calibre en même temps qu'il mesure le
+tangage. Le biais est suivi comme celui du tangage (même clamp, même α), sans quoi
+l'intégrale dériverait.
+
+### Protocole de calibration — c'est le ROBOT qui parcourt la distance
+
+Première idée : piloter au pad et lire l'odométrie. Mauvaise idée — il faut alors
+**lâcher pile au bon endroit**, une précision qu'on n'a pas.
+
+Inversion : le robot parcourt une consigne d'**odométrie**, s'arrête tout seul, et
+annonce ce qu'il a compté. L'humain n'a plus qu'à mesurer le réel au ruban.
+
+> **Ce qui rend ça simple : la précision de l'arrêt n'intervient nulle part.**
+> On compare deux nombres tous deux MESURÉS — l'odométrie et le ruban — jamais un
+> mesuré contre un supposé. Le dépassement est inclus dans le nombre annoncé. Il
+> n'y a donc **pas besoin d'un asservissement de position pour calibrer** : il
+> suffit que ça s'arrête.
+
+Ordre **imposé** : le diamètre d'abord. La voie se déduit d'un écart de distances
+roue — la calibrer sur un diamètre faux y transporte l'erreur.
+
+| | geste | ce qu'on lit |
+|---|---|---|
+| 0 | désarmé (`m`), `O 0`, pivoter le robot **à la main**, `O` | si roues et gyro s'opposent → `K` puis `w` |
+| 1 | `x`, puis **`M 2000`** — poser un repère au sol au départ | `[MOVE]` annonce l'odométrie ; mesurer le réel → `WHEEL_DIAMETER_MM = 84.0 × réel / annoncé` |
+| 2 | `x`, puis **`T 1080`** (3 tours) | `WHEEL_BASE_MM = 158.0 × annoncé / réel`, ou directement la valeur `gyro` sans ruban |
+
+- **Commencer petit** (`M 500`, `T 360`) pour vérifier le mécanisme : `M 2000`
+  demande ~15 s d'équilibre en translation continue, `T 1080` ~20 s de pivot.
+- **`x` avant chaque essai**, sinon `drv_muet`/`contresens` datent du run précédent
+  et le garde-fou « mesure à jeter » se déclenche à tort (ou reste muet à tort).
+- **Toute intervention annule** : le pad, `u`, `M 0`. Le robot rend la main sans
+  qu'aucun de ces chemins n'ait à connaître l'existence de la calibration.
+- Le stream (`t`) reste actif pendant le trajet — utile pour voir ce qui se passe.
+
+**Pourquoi le robot attend 1,5 s avant d'annoncer :** l'odométrie suit le *point de
+contact*, le corps est à `x_roue + L·sin(θ)`. Sur un pendule inversé, avancer
+commence par reculer les roues pour se pencher, et s'arrêter finit par les avancer
+pour se redresser. Les deux ne coïncident qu'**à l'arrêt et debout** — lire trop
+tôt, c'est lire le redressement au lieu du trajet.
+
+**Contrôle automatique de la ligne droite :** rien ne tient le cap pendant `M`. Si
+le robot dévie, la corde qu'on mesure au ruban est plus courte que l'arc que
+l'odométrie a compté, et l'écart se lit comme une erreur de diamètre. Le gyro le
+voit gratuitement : au-delà de 5° de dérive, la console dit de refaire.
+
+### Ce que ces chiffres ne diront jamais
+
+- **Pas commandés ≠ pas faits.** `getCurrentPosition()` compte ce que le générateur
+  de rampe a émis ; un décrochage est invisible ici. `O` refuse donc la mesure si
+  `drv_muet` ou `contresens` ont bougé — sans ça on calibrerait sur du vent.
+- **Le plancher `F` interdit la vitesse roue nulle.** À l'équilibre les roues
+  avancent-reculent en permanence : ça se compense en moyenne mais ajoute une
+  marche aléatoire. Plancher de bruit de l'ordre du **centimètre**.
+- **Le gyro dérive, les roues glissent.** Les deux se trompent différemment, ce qui
+  est précisément l'intérêt de les garder tous les deux.
+
+### Premiers résultats (23/08) — et un bug trouvé par la mesure
+
+| run | odométrie | réel | verdict |
+|---|---|---|---|
+| `M 2000` | 1972,2 mm | 1970 mm au ruban | **écart 2 mm sur 2 m.** `WHEEL_DIAMETER_MM` = 84,0 × 1970/1972 = **83,9 → on ne touche à rien** |
+| `T 1080` | roues 1060,0° · gyro 924° | ~1035° (45° manquants) | voie à revoir, gyro suspect |
+| `T 360` | roues 339,9° · gyro 290° | — | idem |
+
+Le diamètre nominal était donc **juste**. Une première estimation à 82,7 mm venait
+de supposer que l'odométrie valait la consigne (2000) au lieu du chiffre réellement
+annoncé (1972) : l'hypothèse était fausse, pas la mesure. Morale : **toujours lire
+la ligne `[MOVE]`, jamais la consigne.**
+
+#### Le canal de lacet dérivait de −6,8 °/s
+
+Symptôme : `M 2000` annonçait « cap dévié de −91° » sur un trajet que le ruban
+confirmait rectiligne à 2 mm près. Et les deux pivots donnaient un écart
+roues↔gyro de +14,7 % et +17,0 %, ce qui ressemblait à un défaut d'échelle.
+
+Ce n'en était pas un. En cherchant plutôt un **biais constant** :
+
+| run | durée | écart de lacet | biais impliqué |
+|---|---|---|---|
+| `M 2000` | 14,6 s | −91° | −6,2 °/s |
+| `T 1080` | 19,2 s | −136° | −7,1 °/s |
+| `T 360` | 7,2 s | −50° | −7,0 °/s |
+
+Trois trajets indépendants, **−6,8 ± 0,6 °/s**. Un défaut d'échelle aurait donné
+zéro sur la ligne droite — il n'y a rien à mettre à l'échelle quand on ne tourne
+pas. C'est ce zéro manquant qui tranche.
+
+**Cause racine :** l'apprentissage continu du biais gyro repliait `biasEstX_` et
+`biasEstY_` dans les offsets du MPU mais repassait `getGyroZoffset()` **tel quel**.
+Z n'était corrigé nulle part après le boot.
+
+Ça n'avait jamais eu de conséquence parce que **rien ne lisait Z** : la boucle
+d'équilibre ne vit que sur l'axe de tangage. La projection du lacet, elle, lit Z
+avec un poids `sin(o) ≈ 0,36` — il a suffi de la brancher pour que le défaut sorte.
+Un biais Z de ~19 °/s (ordinaire sur un clone) rend exactement les −6,8 °/s.
+
+**Et c'est pour ça que personne ne pouvait le voir :** `calcOffsets` calibre bien
+les trois axes au boot, mais X et Y sont ensuite **ré-appris en permanence** tandis
+que Z garde éternellement sa valeur de boot. Une calibration faite pendant que le
+robot bougeait laisse donc une erreur Z définitive, pendant que le canal de tangage
+se répare tout seul et paraît sain. Un axe qui ne s'auto-répare pas, au milieu de
+deux qui s'auto-réparent.
+
+**Correctif :** `biasEstZ_` appris et replié comme les deux autres. La porte
+d'immobilité reste sur X et Y — la mettre sur `|rz|` serait circulaire, un biais de
+19 °/s ne franchirait jamais un seuil à 6 et ne serait donc jamais appris.
+`ybias` est désormais lisible dans `g` : ce qui était invisible était indétectable.
+
+#### Rotation et translation ne partagent pas le même chemin
+
+Mesuré au passage, sur le dépassement après lâcher de la commande :
+
+| | seuil | arrêt | dépassement | τ |
+|---|---|---|---|---|
+| `M 2000` | 1947,5 mm | 1972,2 mm | 24,7 mm | **0,17 s** |
+| `T 1080` | 1059,0° | 1060,0° | 1,0° | **0,017 s** |
+
+**Dix fois plus court en rotation** — et c'est structurel : avancer traverse toute
+la cascade (boucle vitesse non minimum de phase → boucle d'angle → roues), et le
+robot doit se *redresser* pour s'arrêter. Pivoter est injecté **directement** sur le
+différentiel des roues (`steerToWheelMmS`), sans passer par aucune boucle.
+À retenir pour la future boucle fermée : les deux axes ne demandent pas du tout
+le même soin.
+
+### Verdict (23/08) — constantes calibrées, et le gyro reste à instruire
+
+| constante | avant | après | comment |
+|---|---|---|---|
+| `WHEEL_DIAMETER_MM` | 84,0 | **84,0** (inchangé) | `M 2000` → 1972,2 comptés / 1970 au ruban = 0,1 % |
+| `WHEEL_BASE_MM` | 158,0 | **158,9** | `T 3600` → 3599,5 comptés / ~20° manquants au sol |
+
+`T 3600` (dix tours) était le test décisif : les deux hypothèses en lice
+prédisaient 20° et 45° d'écart, impossibles à confondre. Mesuré : 20°. Et ça
+confirme un premier essai à 4 tours, qui donnait déjà 158,9.
+
+**Contre l'attente :** on prévoyait une voie effective nettement plus grande que le
+relevé au réglet, le pivot sur place faisant *frotter* les pneus latéralement. Elle
+n'est plus grande que de **0,6 %**. Sur ce châssis, le réglet était presque bon.
+
+#### Le gyro sous-estime la rotation, d'autant plus que le trajet est long
+
+| run | durée | réel (roues) | gyro | écart |
+|---|---|---|---|---|
+| `T 360` | 7,5 s | 357,8° | 355,5° | −0,6 % |
+| `T 1080` | 19,5 s | 1073,5° | 1064,7° | −0,8 % |
+| `T 3600` | 61,5 s | 3579,5° | 3504,2° | **−2,1 %** |
+
+Ni un biais constant, ni un défaut d'échelle : l'erreur **croît avec la durée**.
+Un morceau est identifié et corrigé — le suivi de biais de lacet continuait
+d'apprendre *pendant* le pivot. Le clamp borne l'incrément mais ne l'annule pas :
+sur une rotation longue et à sens unique, le biais marche vers elle à
+`ALPHA × CLAMP × LOOP_HZ` = 0,0075 °/s par seconde. Sur 60 s → 14° avalés, soit
+un cinquième de l'écart observé. Le tangage n'avait jamais eu ce problème parce
+qu'il oscille autour de zéro au lieu de partir dans un sens pendant une minute.
+
+**Correctif :** suivi gelé dès que `cmdSteer_ ≠ 0`. Un traqueur de biais doit se
+taire quand il y a du signal — et ici on sait quand il y en a, on l'a commandé.
+
+**Les ~1,7 % restants ne sont pas expliqués.** Conclusion opérationnelle :
+
+> **Ne jamais calibrer la mécanique sur le gyro.** La référence est le SOL — un
+> repère, N tours, l'écart à l'arrivée. Le gyro reste un excellent capteur de
+> VITESSE (c'est tout ce que la boucle d'équilibre lui demande), mais son intégrale
+> n'est pas encore utilisable comme cap absolu. À reprendre avant d'écrire le
+> maintien de cap.
+
+C'est aussi la leçon de méthode de la séance : la calibration a débusqué **deux
+bugs** (offset Z jamais replié, suivi de biais qui mange la rotation) qu'aucun essai
+d'équilibre n'aurait pu révéler, parce que la boucle d'équilibre ne lit ni Z ni le
+lacet. Mesurer une chose neuve, c'est éclairer du code que personne n'exécutait.
+
+### Outils console
+
+- `M <mm>` / `T <deg>` — **déplacement mesuré**. Le robot y va, s'arrête seul et
+  annonce son odométrie via `[MOVE]`, avec les facteurs correctifs déjà calculés.
+  `M 0` / `T 0` annulent. Refusé si désarmé ou pas en `BAL`.
+- `O` / `O 0` — lire / remettre à zéro l'odométrie, à la main.
+  La sortie de `M`/`T` sait maintenant ce que le trajet ÉTAIT censé être : elle
+  proposait sinon de calibrer le diamètre sur les 32 cm de translation parasite
+  d'un pivot, et prévenait qu'un pivot volontaire « n'est plus une ligne droite ».
+- `K` — inverser le signe du lacet gyro. Même statut que `k` : un fait de montage,
+  pas un réglage. Lu dans `g` sous `ys=`, sauvé en NVS.
+- Le stream (`t`) affiche `yaw=` en direct.
+
+`M`/`T` ne sont **pas** un asservissement de position : la commande retombe à zéro
+quand l'odométrie atteint la cible (avec une anticipation de `v·τ`, soit 52 mm à
+150 mm/s), puis le robot s'arrête comme il peut. Vérifié en simulation du premier
+ordre : les quatre cas de signe sont justes et l'anticipation tombe à moins d'un
+millimètre — mais c'est un bonus, pas une exigence.
+
+### Reste à faire
+
+Fermer vraiment la boucle : `OP_FORWARD`/`OP_TURN` (encore au chronomètre)
+terminent sur l'odométrie, avec un profil de décélération au lieu d'un simple
+lâcher. ⚠️ Ce sera une **quatrième couche en cascade** au-dessus d'une boucle
+vitesse déjà lente — elle devra être nettement plus douce qu'elle, sinon les deux
+se battent. Plafond de décélération : borné par `A` (`MAX_LEAN_DEG`), soit
+`g·tan(12°) ≈ 2,1 m/s²`. Et il faudra un **maintien de cap** (gyro Z) : rien ne
+tient la ligne droite aujourd'hui.
+
 ## 📏 22/08 (5) — régler AVEC des chiffres, et le couple (n, d)
 
 ### Ne jamais juger un réglage roues décollées

@@ -67,10 +67,48 @@ constexpr int MOTOR_FULL_STEPS = 200;     // 1.8° → 200 pas/tour
 // stockée EN PAS/s² et resterait deux fois trop rapide physiquement.
 constexpr int MICROSTEPS = 16;            // 16 = 3 cavaliers/socket ; 8 = MS1+MS2 seuls
 constexpr int STEPS_PER_REV = MOTOR_FULL_STEPS * MICROSTEPS; // 3200
+// Diamètre de ROULEMENT — VÉRIFIÉ 23/08 et laissé au nominal. On s'attendait à le
+// voir baisser (sous 1,1 kg le pneu s'écrase, le point de contact tourne sur un
+// rayon plus petit) ; la mesure dit que non, pas de façon détectable.
+//   console `M 2000` : 1972,2 mm d'odométrie → 1970 mm au ruban ⇒ 84,0 × 1970/1972
+//                      = 83,9, soit 0,1 %.
+// 2 mm sur 2 m, c'est sous le bruit du protocole (la stabilisation finale à elle
+// seule vaut ±30 mm). On garde 84,0.
+//
+// ⚠️ LE PIÈGE À NE PAS REPAYER : un premier calcul avait conclu 82,7, en divisant
+// par la CONSIGNE (2000) au lieu de l'odométrie RÉELLEMENT ANNONCÉE (1972,2). Le
+// robot ne s'arrête pas sur la consigne et n'a pas à le faire — c'est tout le
+// principe de `M`/`T`, qui compare deux nombres MESURÉS. Toujours lire la ligne
+// `[MOVE]`, jamais ce qu'on a tapé.
 constexpr float WHEEL_DIAMETER_MM = 84.0f;
 constexpr float WHEEL_CIRCUM_MM = WHEEL_DIAMETER_MM * PI;    // ~263.9 mm
 constexpr float STEPS_PER_MM = STEPS_PER_REV / WHEEL_CIRCUM_MM; // ~12.12
-constexpr float WHEEL_BASE_MM = 150.0f;   // entraxe des roues (à mesurer sur ton châssis)
+// VOIE EFFECTIVE : distance entre les deux BANDES DE ROULEMENT — pas l'entraxe des
+// axes, pas la largeur hors-tout. C'est l'écartement des deux points de contact au
+// sol, la seule grandeur qui entre dans la cinématique différentielle :
+//     rotation :  θ_rad = (d_gauche − d_droite) / WHEEL_BASE_MM
+// et sa lecture INVERSE, `steerToWheelMmS` (Balance.cpp) — qui existe depuis le
+// début. Autrement dit cette constante était déjà en service : une erreur ici est
+// une erreur d'échelle sur toutes les rotations, COMMANDÉES comme mesurées.
+// CALIBRÉE 23/08. Relevé au réglet : 158 mm entre bandes de roulement (les 150 mm
+// d'avant étaient une valeur d'attente jamais mesurée — 5 % de pivot manquant sur
+// chaque virage). Puis vérifié par la mesure, console `T 3600` :
+//     10 tours : 3599,5° comptés → ~20° manquants au sol
+//     158,0 × 3599,5/3579,5 = 158,88
+// Confirmé indépendamment par un premier essai à 4 tours (158,9). Précision ±0,2 mm
+// : à 10 tours, ±5° de lecture ne pèsent plus que ±0,14 %.
+//
+// ⚠️ CE QU'IL FAUT EN RETENIR, parce que ça contredit l'attente : la voie effective
+// n'est que 0,6 % au-dessus du relevé au réglet. On s'attendait à bien plus (le
+// pivot sur place fait FROTTER les pneus latéralement, ce qui gonfle d'habitude la
+// voie effective de plusieurs %) — et le gyro le prétendait, à +2,7 %. Il avait
+// tort, cf. GYRO_SCALE plus bas. Sur ce châssis, le réglet était presque bon.
+//
+// ⚠️ NE PAS CALIBRER CETTE VALEUR SUR LE GYRO. C'est l'erreur qui a failli être
+// commise : le lacet gyro sous-estime la rotation d'autant plus que le trajet est
+// long (−0,6 % à 7 s, −2,1 % à 60 s), donc il fait paraître la voie trop grande.
+// La référence est le SOL : un repère, N tours, l'écart à l'arrivée.
+constexpr float WHEEL_BASE_MM = 158.9f;
 
 // ─────────────────────────────────────────────────────────────────────────
 //  BOUCLE D'ÉQUILIBRE (à RÉGLER une fois le robot monté — cf. README §tuning)
@@ -146,6 +184,13 @@ constexpr float BALANCE_OFFSET_DEG = 20.96f;
 constexpr uint8_t DEFAULT_PITCH_AXIS = 1;   // Y
 constexpr int8_t  DEFAULT_PITCH_SIGN = 1;   // ⇒ axe = y  (relevé au banc : `axe=y`)
 constexpr int8_t  DEFAULT_RATE_SIGN = 1;    // à confirmer au banc (`k`) — cf. ⚠️ ci-dessous
+// Sens du LACET vu par le gyro, vs la convention maison « + = droite » [console `K`].
+// Même nature que DEFAULT_RATE_SIGN : un fait de montage, pas un réglage. La
+// projection du gyro sur la verticale (Balance.cpp) est déjà orientée en théorie —
+// ce signe n'existe que pour le cas où la puce ne respecte pas la règle de la main
+// droite annoncée. SE CONSTATE : `O 0`, pivoter le robot d'un quart de tour À LA
+// MAIN (moteurs coupés, `m`), `O` — si les deux lacets s'opposent, faire `K`.
+constexpr int8_t  DEFAULT_YAW_SIGN = 1;
 // ⚠️ `DEFAULT_PITCH_SIGN` était à -1 alors que le robot tourne à +1 : un `f` aurait
 // retourné la polarité de TOUTE la boucle (pitchSign_ multiplie l'angle ET le gyro),
 // c'est-à-dire un robot qui FONCE DANS LE SENS DE SA CHUTE. C'est le piège n°1 de
@@ -437,6 +482,48 @@ constexpr float TELEOP_MAX_TURN_DEG_S = 120.0f; // fond de course rotation
 // hoquet BLE, assez court pour que le robot ne traverse pas la pièce si le lien
 // tombe (à 300 mm/s : 15 cm).
 constexpr uint32_t TELEOP_TTL_MS = 500;
+
+// ─── DÉPLACEMENT MESURÉ (calibration odométrique, console `M` / `T`) ───────
+// Le robot parcourt une consigne D'ODOMÉTRIE puis s'arrête tout seul ; l'humain
+// mesure le réel au mètre ruban. Le rapport des deux EST la correction.
+// ⚠️ CE QUI REND CE PROTOCOLE SIMPLE : la précision de l'arrêt n'intervient PAS.
+// Le robot annonce ce que son odométrie a compté, dépassement compris — on
+// compare deux nombres tous deux mesurés, jamais un mesuré à un supposé. Inutile
+// donc d'asservir finement la position pour calibrer : il suffit que ça s'arrête.
+//
+// Vitesse VOLONTAIREMENT basse, et pas `P`/`R` : à 300 mm/s la boucle externe
+// (τ ≈ 0,35 s) traîne davantage, le dépassement grandit et les corrections
+// d'équilibre brassent plus de pas parasites dans le compteur. On ne cherche pas
+// la performance ici, on cherche un nombre propre.
+constexpr float ODO_MOVE_SPEED_MM_S = 150.0f;  // croisière en ligne droite
+constexpr float ODO_TURN_SPEED_DEG_S = 60.0f;  // croisière en pivot
+// Anticipation du freinage : la commande retombe à zéro ce temps-là AVANT la
+// cible, parce que le robot met ≈ τ à s'arrêter. Purement cosmétique — un réglage
+// faux ne fausse PAS la mesure, il déplace juste le point d'arrêt.
+//
+// DEUX VALEURS, parce que les deux axes ne passent PAS par le même chemin, et
+// l'écart est spectaculaire :
+//   • AVANCER traverse toute la cascade — boucle vitesse (non minimum de phase),
+//     puis boucle d'angle, puis roues. Le robot doit se REDRESSER pour s'arrêter.
+//   • PIVOTER est injecté DIRECTEMENT sur le différentiel des roues
+//     (`steerToWheelMmS`), sans passer par aucune boucle. C'est quasi instantané.
+// MESURÉ au banc 23/08 (dépassement après lâcher de la commande) :
+//   `M 2000` → arrêt à 1972,2 pour un seuil à 1947,5  ⇒ 24,7 mm ⇒ τ ≈ 0,17 s
+//   `T 1080` → arrêt à 1060,0 pour un seuil à 1059,0  ⇒  1,0 °  ⇒ τ ≈ 0,017 s
+// Soit DIX FOIS plus court en rotation. Le 0,35 s initial était une estimation
+// théorique de la boucle vitesse : deux fois trop grand en ligne droite, vingt
+// fois trop grand en pivot.
+constexpr float ODO_BRAKE_LEAD_S = 0.17f;      // ligne droite (mesuré)
+constexpr float ODO_TURN_BRAKE_LEAD_S = 0.02f; // pivot (mesuré) — presque direct
+// Stabilisation avant de lire : sur un pendule inversé, l'odométrie du point de
+// contact ne vaut celle du corps qu'À L'ARRÊT ET DEBOUT. Lire trop tôt, c'est
+// lire le redressement au lieu du trajet.
+constexpr uint32_t ODO_SETTLE_MS = 1500;
+// Budget de temps, au-delà duquel on abandonne (roue bloquée, patinage, robot
+// soulevé). Marge ×3 sur le trajet nominal : un robot d'équilibre n'avance pas en
+// ligne droite à vitesse constante, il négocie.
+constexpr float ODO_MOVE_TIMEOUT_FACTOR = 3.0f;
+constexpr uint32_t ODO_MOVE_TIMEOUT_PAD_MS = 5000;
 
 // Expo sur la DIRECTION (recette B-Robot, verbatim de son .ino) :
 //   steer = (s² + 0.5·s) · max      pour s ∈ [0, 1]

@@ -28,6 +28,14 @@ class Tuning {
   void handleLine(char* line);
   void printHelp();
   void printState();
+  // Facteurs correctifs de la calibration mécanique, déjà calculés avec les
+  // constantes courantes. Partagé par `O` (lecture manuelle) et par le bilan
+  // automatique d'un déplacement mesuré (`M`/`T`).
+  // `kind` : ce que le trajet ÉTAIT censé être. Sans lui, la console proposait de
+  // calibrer le diamètre sur les 32 cm de translation parasite d'un pivot, et
+  // prévenait qu'un pivot volontaire « n'est plus une ligne droite ».
+  enum CalibKind : uint8_t { CALIB_ANY, CALIB_STRAIGHT, CALIB_TURN };
+  void printOdoCalib(float fwd, float yawWheelDeg, float yawGyroDeg, uint8_t kind);
   void save();
   void factoryReset();
 

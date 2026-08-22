@@ -54,6 +54,7 @@ void Balance::applyDefaultTuning() {
   pitchAxis_ = DEFAULT_PITCH_AXIS; // montage MPU (config.h) : `f` reproduit `a -y`
   pitchSign_ = DEFAULT_PITCH_SIGN;
   rateSign_ = DEFAULT_RATE_SIGN;   // signe du gyro (à confirmer au banc via `k`)
+  yawSign_ = DEFAULT_YAW_SIGN;     // signe du lacet gyro (à confirmer au banc via `K`)
   gyroScale_ = GYRO_SCALE;         // échelle gyro (clones MPU6050), console `G`
   invertLeft_ = INVERT_LEFT;
   invertRight_ = INVERT_RIGHT;
@@ -198,23 +199,40 @@ void Balance::update() {
   // une longe qui oscille lentement (< 6 °/s, donc sous le seuil) voit cette
   // oscillation absorbée comme un biais → offsets gyro faussés. Poser le robot au
   // sol pour toute calibration, ne pas le laisser pendre.
+  // ⚠️ Z A ÉTÉ AJOUTÉ LE 23/08, et son absence était un vrai défaut. Tant que rien
+  // ne lisait le lacet, `getGyroZoffset()` repassait tel quel et personne ne le
+  // voyait. Depuis que la projection du lacet lit Z (avec un poids sin(o) ≈ 0,36),
+  // un biais Z jamais corrigé se retrouvait INTÉGRALEMENT dans l'intégrale de
+  // lacet. Mesuré au banc sur trois trajets indépendants : −6,8 ± 0,6 °/s, soit
+  // ≈ 19 °/s de biais Z brut — ordinaire sur un MPU6050 clone jamais calibré sur
+  // cet axe. C'est ce qui faisait annoncer « cap dévié de −91° » sur une ligne
+  // droite parfaitement droite.
+  // ⚠️ POURQUOI LA PORTE NE TESTE PAS |rz| : ce serait circulaire. Un biais Z de
+  // 19 °/s ne franchirait jamais un seuil à 6, donc ne serait jamais appris, donc
+  // resterait à 19 — un mécanisme qui ne peut pas corriger ce pour quoi il existe.
+  // On se fie donc à l'immobilité constatée sur X et Y, ce qui suppose (comme tout
+  // le reste de ce bloc) un robot POSÉ AU SOL, moteurs coupés.
   if (GYRO_BIAS_LEARNING && !motorsOn_) {
     const float rx = mpu_->getGyroX();
     const float ry = mpu_->getGyroY();
+    const float rz = mpu_->getGyroZ();
     if (fabsf(rx) < 6.0f && fabsf(ry) < 6.0f) {
       biasEstX_ += (rx - biasEstX_) * 0.005f; // EMA, tau ~1 s a 200 Hz
       biasEstY_ += (ry - biasEstY_) * 0.005f;
+      biasEstZ_ += (rz - biasEstZ_) * 0.005f;
       if (++biasSamples_ >= 600) {
         mpu_->setGyroOffsets(mpu_->getGyroXoffset() + biasEstX_,
                              mpu_->getGyroYoffset() + biasEstY_,
-                             mpu_->getGyroZoffset());
+                             mpu_->getGyroZoffset() + biasEstZ_);
         biasEstX_ = 0.0f;
         biasEstY_ = 0.0f;
+        biasEstZ_ = 0.0f;
         biasSamples_ = 0;
-        // Le biais vient d'être replié dans les offsets du MPU : le suivi
-        // permanent repart de zéro, sinon les deux mécanismes compteraient
+        // Le biais vient d'être replié dans les offsets du MPU : les suivis
+        // permanents repartent de zéro, sinon les deux mécanismes compteraient
         // DEUX FOIS la même correction.
         rateBias_ = 0.0f;
+        yawBias_ = 0.0f;
       }
     } else {
       biasSamples_ = 0; // mouvement : reprendre l'accumulation à zéro
@@ -314,6 +332,61 @@ void Balance::update() {
   const float gyroRate = (float)rateSign_ * (float)pitchSign_ * rate; // deg/s
   lastGyroRate_ = gyroRate;
 
+  // --- ODOMÉTRIE : lacet mesuré par le GYRO, indépendamment des roues ---
+  // Placé AVANT l'interrupteur d'armement, et c'est voulu : moteurs coupés, on veut
+  // pouvoir pivoter le robot À LA MAIN et lire ce que les deux sources en disent.
+  // C'est comme ça qu'on constate le signe (`K`) sans rien faire rouler.
+  //
+  // POURQUOI IL FAUT PROJETER, ET SUR QUOI. L'axe de lacet du robot est sa
+  // VERTICALE, qui n'est aucun des trois axes de la puce : l'inclinaison de la
+  // carte autour de l'essieu est libre (c'est tout l'intérêt du montage, cf. `o`),
+  // donc le lacet se répartit entre les deux axes du plan de tangage. Mais cette
+  // inclinaison, on la CONNAÎT déjà — c'est `fusedDeg_`, l'angle de la gravité dans
+  // ce plan, que la fusion suit en permanence. L'accéléro au repos pointe vers le
+  // HAUT, donc le vecteur vertical vaut (sin, cos) sur les axes (u, v) pris dans le
+  // même ordre cyclique que l'atan2 plus haut. Le lacet est la projection du gyro
+  // dessus. Aucune constante nouvelle : le capteur se calibre tout seul en même
+  // temps qu'il mesure le tangage.
+  //
+  // SIGNE : (u, v, ax) est une permutation cyclique de (0,1,2), donc un repère
+  // DIRECT — une rotation positive autour de la verticale est un virage à GAUCHE.
+  // D'où le `-`, qui aligne le lacet sur la convention maison « + = droite »
+  // (celle de `steerToWheelMmS` et de `cmdSteer_`). `yawSign_` reste là pour le
+  // fait de montage, exactement comme `rateSign_` pour le tangage.
+  const uint8_t yu = (ax + 1) % 3, yv = (ax + 2) % 3;
+  const float fusedRad = fusedDeg_ * (float)DEG_TO_RAD;
+  const float rawYaw =
+      -(gyr[yu] * sinf(fusedRad) + gyr[yv] * cosf(fusedRad)) * gyroScale_;
+  // Même recette de suivi de biais que le tangage (clamp AUTOUR de l'estimation
+  // courante), MAIS GELÉ PENDANT UN PIVOT COMMANDÉ — et ce n'est pas une précaution
+  // théorique, c'est un défaut mesuré (`T 3600`, 23/08).
+  //
+  // Le clamp ne suffit pas à protéger une rotation LONGUE et à SENS UNIQUE. Il
+  // borne l'incrément, il ne l'annule pas : le biais marche donc vers la rotation à
+  // ALPHA × CLAMP × LOOP_HZ = 0,0075 °/s par seconde de pivot. Sur 60 s ça fait
+  // 0,46 °/s de faux biais, et l'intégrale en perd la moitié × la durée, soit ≈ 14°
+  // avalés — sur un pivot de 3600°, exactement le genre d'erreur qui fait
+  // sous-estimer la rotation et donc SURESTIMER la voie.
+  // Le tangage n'a jamais eu ce problème : il oscille autour de zéro, il ne part
+  // pas dans un sens pendant une minute. Un traqueur de biais doit se taire quand
+  // il y a du signal, et ici on SAIT quand il y en a — on l'a commandé.
+  if (cmdSteer_ == 0.0f) {
+    const float clampedYaw = constrain(rawYaw, yawBias_ - GYRO_BIAS_TRACK_CLAMP_DPS,
+                                       yawBias_ + GYRO_BIAS_TRACK_CLAMP_DPS);
+    yawBias_ += GYRO_BIAS_TRACK_ALPHA * (clampedYaw - yawBias_);
+  }
+  lastYawRate_ = (float)yawSign_ * (rawYaw - yawBias_);
+  // La remise à zéro est traitée ICI, sur le cœur 1, pour que les trois compteurs
+  // repartent du MÊME tick : comparer roues et gyro n'a de sens que s'ils comptent
+  // à partir du même instant. La faire depuis le cœur 0 les décalerait d'un tour.
+  if (odoResetRequest_) {
+    odoResetRequest_ = false;
+    odoFwdAnchor_ = forwardSteps();
+    odoTurnAnchor_ = turnSteps();
+    yawGyroDeg_ = 0.0f;
+  }
+  yawGyroDeg_ += lastYawRate_ * LOOP_DT;
+
   // --- Interrupteur banc d'essai (console série `m`) ---
   if (!armed_) {
     const float jog = jogMmS_;
@@ -328,6 +401,12 @@ void Balance::update() {
     }
     return;
   }
+
+  // Déplacement MESURÉ : il écrit cmdSpeed_/cmdSteer_ AVANT qu'on les lise, donc
+  // le reste de la boucle n'a rien de spécial à savoir — pour elle c'est un
+  // déplacement commandé comme un autre. Il pose `motionEndMs_ = 0` : ce n'est
+  // plus le chronomètre qui décide de la fin, c'est l'odométrie.
+  odoMoveTick(now);
 
   // Expiration d'un déplacement temporisé (FORWARD/BACKWARD/TURN/LOOK).
   taskENTER_CRITICAL(&mux_);
@@ -727,6 +806,7 @@ void Balance::resetControl() {
   cmdSteer_ = 0.0f;
   motionEndMs_ = 0;
   gestureOp_ = 0;
+  odoPhase_ = 0; // une chute ou un ré-engagement annule un déplacement mesuré
   taskEXIT_CRITICAL(&mux_);
 }
 
@@ -804,6 +884,98 @@ void Balance::startTimedMotion(float speedMmS, float steerDegS, uint32_t duratio
   cmdSpeed_ = speedMmS;
   cmdSteer_ = steerDegS;
   motionEndMs_ = end;
+  // TOUTE commande de déplacement annule un déplacement mesuré en cours. C'est le
+  // seul garde-fou qui compte vraiment ici : le pad, `u`, OP_DRIVE et OP_STOP
+  // passent tous par ici ou par stopMotion(), donc l'humain reprend la main sans
+  // qu'aucun d'eux n'ait à connaître l'existence de la calibration.
+  odoPhase_ = 0;
+  taskEXIT_CRITICAL(&mux_);
+}
+
+// Départ d'un déplacement MESURÉ (cœur 0). On ne fait que POSER la demande : la
+// remise à zéro de l'odométrie est faite par le cœur 1 au premier tick, pour que
+// le compteur parte exactement du même instant que le mouvement.
+void Balance::startOdoMove(float mm, float deg) {
+  const uint32_t budget =
+      (uint32_t)(ODO_MOVE_TIMEOUT_FACTOR * 1000.0f *
+                 (mm != 0.0f ? fabsf(mm) / ODO_MOVE_SPEED_MM_S
+                             : fabsf(deg) / ODO_TURN_SPEED_DEG_S)) +
+      ODO_MOVE_TIMEOUT_PAD_MS;
+  taskENTER_CRITICAL(&mux_);
+  odoGoalMm_ = mm;
+  odoGoalDeg_ = deg;
+  odoDeadlineMs_ = millis() + budget;
+  odoPhase_ = 1;
+  taskEXIT_CRITICAL(&mux_);
+}
+
+// Machine à états du déplacement mesuré (cœur 1).
+void Balance::odoMoveTick(uint32_t nowMs) {
+  taskENTER_CRITICAL(&mux_);
+  uint8_t phase = odoPhase_;
+  const float goalMm = odoGoalMm_, goalDeg = odoGoalDeg_;
+  const uint32_t deadline = odoDeadlineMs_;
+  taskEXIT_CRITICAL(&mux_);
+  if (phase == 0) return;
+
+  if (phase == 1) {
+    // Départ : l'odométrie repart de zéro ICI, dans le même tick que le premier
+    // mouvement. La faire côté cœur 0 laisserait passer un tour de boucle.
+    odoFwdAnchor_ = forwardSteps();
+    odoTurnAnchor_ = turnSteps();
+    yawGyroDeg_ = 0.0f;
+    phase = 2;
+    taskENTER_CRITICAL(&mux_);
+    odoPhase_ = 2;
+    taskEXIT_CRITICAL(&mux_);
+  }
+
+  const bool straight = goalMm != 0.0f;
+
+  if (phase == 2) {
+    const float goal = straight ? goalMm : goalDeg;
+    const float done = straight ? odoForwardMm() : odoYawWheelDeg();
+    const float cruise = straight ? ODO_MOVE_SPEED_MM_S : ODO_TURN_SPEED_DEG_S;
+    const float sgn = goal >= 0.0f ? 1.0f : -1.0f;
+    // On lâche la commande AVANT la cible : le robot roule encore ≈ v·τ. Le
+    // dépassement résiduel est mesuré, pas supposé — il n'entache rien.
+    const float lead = cruise * (straight ? ODO_BRAKE_LEAD_S : ODO_TURN_BRAKE_LEAD_S);
+    const bool arrived = sgn * done >= sgn * goal - lead;
+    const bool late = (int32_t)(nowMs - deadline) >= 0;
+    taskENTER_CRITICAL(&mux_);
+    if (arrived || late) {
+      odoEndReason_ = late ? MOVE_TIMEOUT : MOVE_REACHED;
+      odoSettleAtMs_ = nowMs + ODO_SETTLE_MS;
+      cmdSpeed_ = 0.0f;
+      cmdSteer_ = 0.0f;
+      odoPhase_ = 3;
+    } else {
+      cmdSpeed_ = straight ? sgn * cruise : 0.0f;
+      cmdSteer_ = straight ? 0.0f : sgn * cruise;
+    }
+    motionEndMs_ = 0; // c'est l'odométrie qui décide de la fin, pas le chrono
+    taskEXIT_CRITICAL(&mux_);
+    return;
+  }
+
+  // Phase 3 : stabilisation. On tient la consigne à zéro et on ne lit qu'une fois
+  // le robot revenu debout et immobile — avant ça, l'odométrie du point de contact
+  // décrit le redressement, pas le trajet.
+  taskENTER_CRITICAL(&mux_);
+  cmdSpeed_ = 0.0f;
+  cmdSteer_ = 0.0f;
+  taskEXIT_CRITICAL(&mux_);
+  if ((int32_t)(nowMs - odoSettleAtMs_) < 0) return;
+
+  move_.askedMm = goalMm;
+  move_.askedDeg = goalDeg;
+  move_.gotMm = odoForwardMm();
+  move_.gotWheelDeg = odoYawWheelDeg();
+  move_.gotGyroDeg = odoYawGyroDeg();
+  move_.reason = odoEndReason_;
+  movePending_ = true;
+  taskENTER_CRITICAL(&mux_);
+  odoPhase_ = 0;
   taskEXIT_CRITICAL(&mux_);
 }
 
@@ -813,6 +985,7 @@ void Balance::stopMotion() {
   cmdSteer_ = 0.0f;
   motionEndMs_ = 0;
   gestureOp_ = 0;
+  odoPhase_ = 0;
   taskEXIT_CRITICAL(&mux_);
 }
 

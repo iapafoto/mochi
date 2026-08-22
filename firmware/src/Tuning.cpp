@@ -64,6 +64,7 @@ void Tuning::begin(Balance* balance, Console& io) {
       balance_->setInvertLeft(prefs.getBool("invL", balance_->invertLeft()));
       balance_->setInvertRight(prefs.getBool("invR", balance_->invertRight()));
       balance_->setRateSign((int8_t)prefs.getChar("rateS", 1));
+      balance_->setYawSign((int8_t)prefs.getChar("yawS", balance_->yawSign()));
       balance_->setMaxAccel(prefs.getFloat("accel", balance_->maxAccel()));
       balance_->setFilterCoef(prefs.getFloat("fcoef", balance_->filterCoef()));
       balance_->setGyroScale(prefs.getFloat("gscale", balance_->gyroScale()));
@@ -134,6 +135,25 @@ void Tuning::poll() {
                 (unsigned long)(drv.atMs / 1000));
   }
 
+  // --- Bilan d'un déplacement MESURÉ (console `M` / `T`) ---
+  // Latché par le cœur 1 après stabilisation, imprimé ici : la boucle temps réel
+  // ne fait pas de printf, et surtout la mesure n'a de sens qu'une fois le robot
+  // revenu debout et immobile (cf. Balance.h).
+  Balance::MoveInfo mv;
+  if (balance_->takeMoveEvent(mv)) {
+    const bool straight = mv.askedMm != 0.0f;
+    io_->printf("[MOVE] %s : demande %+.0f %s -> ODOMETRIE %+.1f %s%s\n",
+                straight ? "avance" : "rotation",
+                straight ? mv.askedMm : mv.askedDeg, straight ? "mm" : "deg",
+                straight ? mv.gotMm : mv.gotWheelDeg, straight ? "mm" : "deg",
+                mv.reason == Balance::MOVE_TIMEOUT
+                    ? "  ⚠ ARRET SUR DELAI (roue bloquee ? patinage ? robot souleve ?)"
+                    : "");
+    io_->println("       >>> MESURER le reel, puis reporter dans config.h :");
+    printOdoCalib(mv.gotMm, mv.gotWheelDeg, mv.gotGyroDeg,
+                  straight ? CALIB_STRAIGHT : CALIB_TURN);
+  }
+
   // --- Sortie : stream périodique pitch / consigne / vitesse ---
   const uint32_t now = millis();
   if (stream_ && now - lastStreamMs_ >= STREAM_PERIOD_MS) {
@@ -142,10 +162,11 @@ void Tuning::poll() {
     // quasi figé : s'il grimpe pendant un run, le bus est bruité, pas les gains.
     // `o*` = zéro que l'intégrale compense en permanence. Quand il se stabilise
     // pendant un équilibre calme, `Z` puis `w` le gravent → plus de dérive au départ.
-    io_->printf("[tune] pitch=%+7.2f gy=%+7.1f (X=%+7.2f Y=%+7.2f) tgt=%+6.2f v=%+6.0fmm/s x=%+6.0fmm glt=%lu o*=%+6.2f %s%s\n",
+    io_->printf("[tune] pitch=%+7.2f gy=%+7.1f (X=%+7.2f Y=%+7.2f) tgt=%+6.2f v=%+6.0fmm/s x=%+6.0fmm yaw=%+7.1f glt=%lu o*=%+6.2f %s%s\n",
                   balance_->pitchDeg(), balance_->gyroRateDps(),
                   balance_->rawAngleX(), balance_->rawAngleY(),
                   balance_->targetDeg(), balance_->wheelMmS(), balance_->traveledMm(),
+                  balance_->odoYawGyroDeg(),
                   (unsigned long)balance_->glitchCount(),
                   balance_->suggestedOffsetDeg(),
                   stateName(balance_->state()), balance_->armed() ? "" : " (desarme)");
@@ -248,6 +269,61 @@ void Tuning::handleLine(char* line) {
       printState();
       break;
     }
+    // --- Odometrie / calibration mecanique ---
+    // `O 0` remet les compteurs a zero, `O` les lit. Le protocole tient en trois
+    // gestes : remettre a zero, faire le trajet, ARRETER LE ROBOT DEBOUT, relire.
+    // Le « debout a l'arret » n'est pas une precaution de style : l'odometrie suit
+    // le POINT DE CONTACT, alors que le corps est a x_roue + L.sin(theta) — les
+    // deux ne coincident qu'aux etats de repos (cf. Balance.h).
+    case 'O': {
+      if (*arg) { // `O 0` — tout argument vaut remise a zero
+        balance_->resetOdometry();
+        io_->println("[tune] odo a zero — faire le trajet, ARRETER le robot DEBOUT, puis `O`");
+        break;
+      }
+      const float fwd = balance_->odoForwardMm();
+      const float yawW = balance_->odoYawWheelDeg();
+      const float yawG = balance_->odoYawGyroDeg();
+      io_->printf("[tune] odo : avance=%+.0f mm | lacet roues=%+.1f gyro=%+.1f deg (ys=%+d)\n",
+                  fwd, yawW, yawG, (int)balance_->yawSign());
+      printOdoCalib(fwd, yawW, yawG, CALIB_ANY);
+      break;
+    }
+    // --- Deplacement MESURE : c'est le ROBOT qui parcourt la distance ---
+    // `M <mm>` avance, `T <deg>` pivote, `M 0` / `T 0` annulent. Il s'arrete tout
+    // seul et annonce son odometrie ; l'humain n'a qu'a mesurer le reel.
+    // ⚠️ Le point d'arret n'a PAS besoin d'etre precis, et c'est tout l'interet :
+    // on compare deux nombres MESURES (odometrie vs ruban), jamais un nombre
+    // mesure a un nombre suppose. Piloter a la main obligeait a lacher pile au bon
+    // endroit — une precision qu'on n'a pas, et dont on n'a pas besoin.
+    case 'M':
+    case 'T': {
+      const float v = atof(arg);
+      if (v == 0.0f) {
+        balance_->stopMotion();
+        io_->println("[tune] deplacement mesure annule");
+        break;
+      }
+      if (!balance_->armed()) {
+        io_->println("[tune] armer d'abord (`m`)");
+        break;
+      }
+      if (balance_->state() != STATE_BALANCING) {
+        io_->println("[tune] le robot doit etre EN EQUILIBRE : le poser droit, attendre `BAL`");
+        break;
+      }
+      balance_->startOdoMove(cmd == 'M' ? v : 0.0f, cmd == 'M' ? 0.0f : v);
+      io_->printf("[tune] %s %+.0f %s — il s'arretera TOUT SEUL, puis annoncera son odometrie.\n"
+                  "       Ne pas le rattraper : le pad, `u` ou `%c 0` annulent. Faire `x` AVANT\n"
+                  "       pour que drv_muet/contresens ne decrivent que CE trajet.\n",
+                  cmd == 'M' ? "avance de" : "pivote de", v,
+                  cmd == 'M' ? "mm" : "deg", cmd);
+      break;
+    }
+    case 'K':
+      balance_->setYawSign(balance_->yawSign() > 0 ? -1 : 1);
+      io_->printf("[tune] signe lacet gyro = %+d\n", balance_->yawSign());
+      break;
     // --- Teleguidage ---
     // `u <mm/s> [deg/s] [ms]` — avancer / pivoter. La commande EXPIRE d'elle-meme
     // (homme mort, cf. protocol.h) : tapee a la main elle donne une pichenette de
@@ -352,6 +428,16 @@ void Tuning::printHelp() {
       "             l'inclinaison de la carte autour de cet axe est libre (`z` absorbe)\n"
       "  k          inverser le signe du gyro (terme D) — montage MPU inverse ; lu dans `g`\n"
       "             sous `ks=` (c'etait le seul fait de calibration non relisible)\n"
+      "  O [0]      odometrie : `O 0` remet a zero, `O` lit avance + lacet (roues ET gyro)\n"
+      "             sert a CALIBRER le diametre de roue et la voie — la console rend le\n"
+      "             facteur correctif. `O 0`, trajet, robot DEBOUT A L'ARRET, `O`\n"
+      "  K          inverser le signe du lacet gyro (fait de montage, comme `k`) ; lu dans\n"
+      "             `g` sous `ys=`. Se constate en pivotant le robot A LA MAIN, desarme\n"
+      "  M <mm>     AVANCE MESUREE : le robot parcourt N mm d'odometrie, s'arrete TOUT\n"
+      "             SEUL, puis annonce ce qu'il a compte. Toi tu mesures le reel au ruban\n"
+      "             — le rapport des deux EST la correction. `M 0` annule. Le point d'arret\n"
+      "             n'a pas besoin d'etre precis : on compare deux nombres MESURES\n"
+      "  T <deg>    idem en PIVOT (+ = droite). Ex. `T 1080` = 3 tours\n"
       "  G <val>    echelle gyro (clones MPU6050). Mesure : `y 0.95` = angle accelero\n"
       "             (fiable) vs `y 0.9999` = angle gyro ; basculer 90 deg, ajuster.\n"
       "  l / r      inverser le sens de la roue gauche / droite\n"
@@ -370,21 +456,81 @@ void Tuning::printHelp() {
       "  f          defauts usine (efface NVS, recharge config.h)");
 }
 
+// Les corrections, DEJA CALCULEES avec les constantes courantes : il ne reste
+// qu'a diviser par la mesure reelle. Une erreur d'echelle etant proportionnelle,
+// c'est le trajet LONG (~2 m, ~3 tours) qui la rend lisible.
+// ⚠️ ORDRE IMPOSE : le diametre D'ABORD. La voie se deduit d'un ecart de distances
+// roue — la calibrer sur un diametre faux y transporte l'erreur.
+void Tuning::printOdoCalib(float fwd, float yawW, float yawG, uint8_t kind) {
+  const bool wantFwd = kind != CALIB_TURN;
+  const bool wantTurn = kind != CALIB_STRAIGHT;
+  // Un pivot qui translate n'invalide rien, mais ça se signale : un robot qui
+  // dérive de 30 cm en tournant sur place patine, et le patinage est justement ce
+  // qui sépare le lacet vu par les roues de celui vu par le gyro.
+  if (kind == CALIB_TURN && fabsf(fwd) > 50.0f) {
+    io_->printf("       (translation parasite %+.0f mm pendant le pivot — il glisse)\n", fwd);
+  }
+  if (wantFwd && fabsf(fwd) > 1.0f) {
+    io_->printf("       WHEEL_DIAMETER_MM = %.1f x (reel_mm / %.0f)  <- calibrer CECI d'abord\n",
+                WHEEL_DIAMETER_MM, fabsf(fwd));
+    // Un trajet qui a TOURNE n'est plus une ligne droite : la corde qu'on mesure
+    // au ruban est plus courte que l'arc que l'odometrie a compte, et l'ecart se
+    // lit comme une erreur de diametre. Le gyro le voit gratuitement.
+    if (kind == CALIB_STRAIGHT && fabsf(yawG) > 5.0f) {
+      io_->printf("       ⚠ cap devie de %+.0f deg pendant le trajet : soit le robot a tourne\n"
+                  "         (le ruban sous-estime alors l'arc), soit le canal de lacet derive.\n"
+                  "         Trancher : robot POSE et DESARME, `O 0`, attendre 30 s, `O`.\n"
+                  "         Un lacet qui bouge a l'arret = biais (`g` -> ybias), pas un virage\n", yawG);
+    }
+  }
+  if (wantTurn && fabsf(yawW) > 1.0f) {
+    io_->printf("       WHEEL_BASE_MM = %.1f x (%.1f / reel_deg)\n",
+                WHEEL_BASE_MM, fabsf(yawW));
+    // Le gyro rend la MEME correction SANS metre ruban : il ne doit rien a
+    // WHEEL_BASE_MM et ignore le patinage lateral du pivot sur place. Si les deux
+    // methodes s'accordent, la voie est juste ; si elles divergent alors que `K`
+    // est bon, ce sont les roues qui glissent — donc c'est le gyro qui a raison.
+    if (fabsf(yawG) > 1.0f) {
+      // Deux lacets de signes OPPOSES ne sont pas un ecart d'echelle, c'est le
+      // signe de montage qui est faux — et sans ce test la « voie corrigee »
+      // sortirait NEGATIVE, ce qui se lit mal. Les roues font foi : leur sens vient
+      // de la convention deja verifiee de `steerToWheelMmS`.
+      if ((yawW > 0.0f) != (yawG > 0.0f)) {
+        io_->println("       ⚠ roues et gyro tournent en SENS OPPOSES -> faire `K` (puis `w`), "
+                     "et refaire la mesure");
+      } else {
+        io_->printf("       ou sans mesure, en croyant le gyro : %.1f mm (ecart roues-gyro %+.1f%%)\n",
+                    WHEEL_BASE_MM * yawW / yawG, (yawW / yawG - 1.0f) * 100.0f);
+      }
+    }
+  }
+  // Sans ce rappel, une odometrie fausse par DECROCHAGE passerait pour une erreur
+  // de constante, et on calibrerait sur du vent : `getCurrentPosition()` compte
+  // les pas COMMANDES, pas les pas FAITS (cf. Balance.h).
+  if (balance_->drvMuteCount() || balance_->wrongWayMs() > 50) {
+    io_->printf("       ⚠ drv_muet=%u contresens=%lums : des pas COMMANDES n'ont pas ete "
+                "FAITS — mesure a jeter\n",
+                balance_->drvMuteCount(), (unsigned long)balance_->wrongWayMs());
+  }
+}
+
 void Tuning::printState() {
   io_->printf(
-      "[tune] p=%.3f d=%.3f v=%.4f i=%.5f o=%+.2f e=%.3f axe=%s%c ks=%+d invL=%d invR=%d | "
+      "[tune] p=%.3f d=%.3f v=%.4f i=%.5f o=%+.2f e=%.3f axe=%s%c ks=%+d ys=%+d invL=%d invR=%d | "
       "pitch=%+.2f glt=%lu acc=%.0f y=%.4f gs=%.3f | "
       "V=%.0f D=%u F=%.0f | conduite A=%.0f P=%.0f R=%.0f | "
-      "bias=%+.2f o*=%+.2f %s%s\n",
+      "bias=%+.2f ybias=%+.2f o*=%+.2f %s%s\n",
       balance_->kiAng(), balance_->kpAng(), balance_->kpSpeed(), balance_->kiSpeed(),
       balance_->offsetDeg(), balance_->kdAng(), balance_->pitchSign() < 0 ? "-" : "",
       "xyz"[balance_->pitchAxis() % 3], (int)balance_->rateSign(),
+      (int)balance_->yawSign(),
       balance_->invertLeft(), balance_->invertRight(),
       balance_->pitchDeg(), (unsigned long)balance_->glitchCount(),
       balance_->maxAccel(), balance_->filterCoef(), balance_->gyroScale(),
       balance_->maxWheelSpeed(), (unsigned)balance_->dlpf(), balance_->speedFloorMmS(),
       balance_->maxLeanDeg(), balance_->teleopMaxSpeed(), balance_->teleopMaxTurn(),
-      balance_->gyroBiasDps(), balance_->suggestedOffsetDeg(),
+      balance_->gyroBiasDps(), balance_->yawBiasDps(),
+      balance_->suggestedOffsetDeg(),
       stateName(balance_->state()), balance_->armed() ? "" : " (desarme)");
   // Bilan des coupures depuis le boot. Un run qui « a des absences » sans qu'AUCUN
   // de ces compteurs ne bouge désigne le matériel, pas le firmware.
@@ -436,6 +582,7 @@ void Tuning::save() {
   prefs.putBool("invL", balance_->invertLeft());
   prefs.putBool("invR", balance_->invertRight());
   prefs.putChar("rateS", balance_->rateSign());
+  prefs.putChar("yawS", balance_->yawSign());
   prefs.putFloat("accel", balance_->maxAccel());
   prefs.putFloat("fcoef", balance_->filterCoef());
   prefs.putFloat("gscale", balance_->gyroScale());
