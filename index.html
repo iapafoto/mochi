@@ -4,6 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#1a1030" />
+    <!-- Chemins RELATIFS : le manifeste est servi sous la base Vite (`/mochi/`),
+         et ses propres `start_url`/`icons` se résolvent par rapport à lui. Rien à
+         retoucher si le sous-dossier de déploiement change. -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="icon.svg" />
     <title>Mochi</title>
   </head>
   <body>

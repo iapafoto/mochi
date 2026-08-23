@@ -1,5 +1,5 @@
-import type { Transport } from './transport';
-import { encodeMessage, opName } from './transport';
+import type { Transport, MotorEvent } from './transport';
+import { motorEvent, opName } from './transport';
 import {
   MOCHI_SERVICE_UUID,
   MOCHI_COMMAND_UUID,
@@ -36,17 +36,22 @@ interface BluetoothDeviceLite extends EventTarget {
 }
 
 /**
- * Transport Web Bluetooth (v2). Parle le profil GATT de Mochi (bleProfile.ts),
- * identique au firmware ESP32 (protocol.h). Remplace MockTransport dans main.ts
- * sans rien changer d'autre : le reste du code ne dépend que de `Transport`.
+ * Transport Web Bluetooth. Parle le profil GATT de Mochi (bleProfile.ts),
+ * identique au firmware ESP32 (protocol.h).
  *
- * ⚠️ Web Bluetooth exige un contexte sécurisé (HTTPS) et un geste utilisateur
- * pour `requestDevice` (le bouton « Connecter le robot » du panneau).
+ * ⚠️ Web Bluetooth exige un contexte sécurisé (HTTPS ou localhost) et un geste
+ * utilisateur pour `requestDevice` (le bouton « Connecter » du panneau).
+ *
+ * ⚠️ Le robot démarre DÉSARMÉ : se connecter ne suffit pas à le faire bouger, il
+ * faut lui envoyer Op.ARM. Sans ça le firmware accepte les déplacements et n'en
+ * exécute aucun — symptôme : « ça envoie, rien ne bouge, aucune erreur ».
  */
 export class BleTransport implements Transport {
   private device: BluetoothDeviceLite | null = null;
   private commandChar: BluetoothRemoteGATTCharacteristicLite | null = null;
   private telemetryCb: ((state: DataView) => void) | null = null;
+  private motorCbs: ((e: MotorEvent) => void)[] = [];
+  private connectionCbs: ((connected: boolean) => void)[] = [];
   private _connected = false;
 
   get connected(): boolean {
@@ -81,14 +86,20 @@ export class BleTransport implements Transport {
     });
     await telemetry.startNotifications();
 
-    this._connected = true;
+    this.setConnected(true);
     console.info('[bleTransport] connecté à Mochi');
   }
 
   private handleDisconnect(): void {
-    this._connected = false;
     this.commandChar = null;
+    this.setConnected(false);
     console.warn('[bleTransport] déconnecté');
+  }
+
+  private setConnected(on: boolean): void {
+    if (this._connected === on) return;
+    this._connected = on;
+    for (const cb of this.connectionCbs) cb(on);
   }
 
   disconnect(): void {
@@ -97,21 +108,36 @@ export class BleTransport implements Transport {
   }
 
   sendIntent(op: number, ...args: number[]): void {
-    if (!this.commandChar || !this._connected) {
+    const live = !!this.commandChar && this._connected;
+    // On journalise MÊME quand le lien est coupé, avec `sent: false`. C'est ce qui
+    // permet de trancher « l'app n'a rien émis » / « l'app a émis, le robot n'a rien
+    // fait » — la première question qu'on se pose devant un robot qui ne bouge pas.
+    const e = motorEvent(op, args, live);
+    for (const cb of this.motorCbs) cb(e);
+    if (!live) {
       console.warn('[bleTransport] non connecté, intention ignorée', opName(op), args);
       return;
     }
     // Copie dans un ArrayBuffer garanti (le générique Uint8Array de TS 5.7 n'est
     // pas directement assignable à BufferSource).
-    const bytes = new Uint8Array(encodeMessage(op, args));
+    const bytes = new Uint8Array(e.bytes);
     // Écriture sans réponse : rapide, adaptée au flux de commandes. On avale les
     // rejets transitoires (buffer plein) pour ne pas casser la boucle d'intentions.
-    this.commandChar.writeValueWithoutResponse(bytes).catch((e) => {
-      console.warn('[bleTransport] écriture échouée', opName(op), e);
+    this.commandChar!.writeValueWithoutResponse(bytes).catch((err) => {
+      console.warn('[bleTransport] écriture échouée', opName(op), err);
     });
   }
 
   onTelemetry(cb: (state: DataView) => void): void {
     this.telemetryCb = cb;
+  }
+
+  onMotorEvent(cb: (e: MotorEvent) => void): void {
+    this.motorCbs.push(cb);
+  }
+
+  /** Notifié aussi sur perte de lien subie (robot éteint, hors de portée). */
+  onConnectionChange(cb: (connected: boolean) => void): void {
+    this.connectionCbs.push(cb);
   }
 }

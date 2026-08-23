@@ -32,6 +32,24 @@ enum Opcode : uint8_t {
   OP_WIGGLE = 0x12,   // —              se dandine
   OP_LOOK = 0x20,     // int8 dir       coup d'œil (petit pivot) — cf. LookCode
   OP_CALIBRATE = 0x30, // —             recalibre l'IMU (robot immobile+vertical, ~2 s, moteurs coupés)
+  // ⚠️ ARMEMENT EXPLICITE. Le robot démarre DÉSARMÉ (BOOT_ARMED = false) : sans cet
+  // ordre, un déplacement reçu par BLE est accepté, calculé… et ne fait rien, parce que
+  // update() garde les moteurs coupés. Jusqu'ici seule la console `m` armait — l'app
+  // était donc condamnée à un robot muet qu'aucun message d'erreur n'expliquait.
+  // Désarmer stoppe AUSSI le déplacement en cours : une consigne qui survivrait à la
+  // coupure repartirait telle quelle au réarmement suivant.
+  OP_ARM = 0x31,      // uint8 0/1      1 = arme les moteurs, 0 = désarme (et stoppe)
+  // --- ZÉRO D'ASSIETTE (le point d'équilibre). Équivalents BLE de `z`, `Z`, `w`.
+  // Deux façons de le trouver, et elles ne se valent pas :
+  //   ZERO_HERE  — rapide, robot en main : « cette pose EST le zéro ». Vaut ce que
+  //                vaut la main qui tient (1 à 3°). C'est un dépannage.
+  //   ZERO_ADOPT — lent, robot debout : adopte ce que ∫θ compense en permanence, donc
+  //                ce que le ROBOT a mesuré lui-même après ~30 s d'équilibre calme.
+  //                C'est la méthode qui a donné BALANCE_OFFSET_DEG à 0,06° près.
+  // Ni l'un ni l'autre ne survit au reboot sans SAVE.
+  OP_ZERO_HERE = 0x32,  // —            la pose actuelle devient 0° (console `z`)
+  OP_ZERO_ADOPT = 0x33, // —            adopte le zéro suggéré par ∫θ (console `Z`)
+  OP_SAVE = 0x34,       // —            persiste les réglages en NVS (console `w`)
 };
 
 // Codes de direction pour OP_LOOK (cf. LookCode dans transport.ts).
@@ -75,6 +93,11 @@ enum RobotState : uint8_t {
 // Bits du champ `flags`.
 constexpr uint8_t TELEM_FLAG_OBSTACLE = 0x01;
 constexpr uint8_t TELEM_FLAG_MOTORS = 0x02;
+// ⚠️ ARMÉ ≠ MOTEURS ALIMENTÉS, et confondre les deux trompe l'app. Un robot armé
+// mais couché a ses moteurs coupés (cutMotors) et va se rengager tout seul dès qu'on
+// le relève : afficher « désarmé » dans cet état ferait cliquer « Armer » pour rien,
+// et le clic suivant le désarmerait pour de bon.
+constexpr uint8_t TELEM_FLAG_ARMED = 0x04;
 
 #pragma pack(push, 1)
 struct TelemetryPacket {

@@ -101,6 +101,7 @@ class Balance {
   // compter la correction deux fois et ferait partir le robot dans l'autre sens.
   void setOffsetDeg(float v) { offsetDeg_ = v; clearAngleInteg(); }
   void zeroOffsetHere();     // pose actuelle = 0° (offset replié dans ±180)
+  bool captureZeroHere();    // idem, mais refuse une pose aberrante [OP_ZERO_HERE]
   // Zéro d'assiette SUGGÉRÉ par l'intégrale : à l'équilibre au repos, la loi
   // impose Kp·θ + Ki·∫θ ≈ 0, donc l'angle réellement tenu vaut −(Ki/Kp)·∫θ. Ce que
   // ∫θ compense en permanence, c'est exactement l'erreur de `o`. Recopier cette

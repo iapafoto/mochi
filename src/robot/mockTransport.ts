@@ -1,19 +1,10 @@
-import type { Transport } from './transport';
-import { encodeMessage, opName } from './transport';
-
-/** Événement émis à chaque intention moteur, pour le panneau debug. */
-export interface MotorEvent {
-  op: number;
-  name: string;
-  args: number[];
-  bytes: Uint8Array;
-  t: number; // timestamp ms
-}
+import type { Transport, MotorEvent } from './transport';
+import { motorEvent } from './transport';
 
 /**
- * Transport mocké (v1) : ne pilote aucun moteur, logue chaque intention en
- * console et notifie les abonnés (panneau debug). Encode réellement le message
- * fil pour valider le protocole côté mock.
+ * Transport mocké : ne pilote aucun moteur, journalise chaque intention et
+ * notifie les abonnés (panneau debug). Encode réellement le message fil pour
+ * valider le protocole sans robot sous la main.
  */
 export class MockTransport implements Transport {
   private _connected = false;
@@ -33,17 +24,15 @@ export class MockTransport implements Transport {
   }
 
   sendIntent(op: number, ...args: number[]): void {
-    const bytes = encodeMessage(op, args);
-    const e: MotorEvent = { op, name: opName(op), args, bytes, t: Date.now() };
-    console.info('[mockTransport] intent', e.name, args, bytes);
+    const e = motorEvent(op, args, true);
+    console.info('[mockTransport] intent', e.name, args, e.bytes);
     for (const cb of this.listeners) cb(e);
   }
 
   onTelemetry(_cb: (state: DataView) => void): void {
-    // v2 uniquement.
+    // Un mock n'a rien à raconter sur un robot qui n'existe pas.
   }
 
-  /** Abonnement du panneau debug aux intentions moteur. */
   onMotorEvent(cb: (e: MotorEvent) => void): void {
     this.listeners.push(cb);
   }

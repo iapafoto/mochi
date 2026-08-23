@@ -1,5 +1,13 @@
 // Vocabulaire d'intentions — défini UNE fois, exposé à Gemini comme
-// functionDeclarations, dispatché vers visage (réel) / son / transport (mock v1).
+// functionDeclarations, dispatché vers visage / son / transport (robot réel).
+//
+// ⚠️ DEUX FAMILLES, et la distinction n'est pas cosmétique :
+//   — EXPRESSION (express, blink, wink, look, emote) : écran et haut-parleur. Gratuit,
+//     réversible, appelable à chaque réplique.
+//   — DÉPLACEMENT (forward, backward, turn, circle, nod, bow, wiggle) : ça fait ROULER
+//     un pendule inversé de 1,1 kg dans une vraie pièce, avec une vraie table dont il
+//     peut tomber. Les descriptions le disent au modèle, et persona.ts le répète dans
+//     les règles : on ne bouge que si l'humain l'a demandé.
 //
 // Le format des déclarations est volontairement neutre (OpenAPI-ish) ; gemini.ts
 // l'adapte au SDK courant. Ne pas y mettre de détail réseau.
@@ -70,7 +78,8 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
   },
   {
     name: 'look',
-    description: 'Oriente le regard de Mochi dans une direction.',
+    description:
+      'Oriente le REGARD de Mochi (les yeux seulement, le corps ne bouge pas).',
     parameters: {
       type: 'object',
       properties: {
@@ -83,10 +92,11 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
       required: ['dir'],
     },
   },
-  // --- Mouvement (mocké en v1, BLE en v2) ---
+  // --- Déplacement RÉEL (BLE → ESP32) ---
   {
     name: 'forward',
-    description: 'Avance de N centimètres (mouvement mocké en v1).',
+    description:
+      'DÉPLACEMENT RÉEL : avance de N centimètres. À n’appeler que si on demande de bouger.',
     parameters: {
       type: 'object',
       properties: { cm: { type: 'integer', description: 'Distance en cm.' } },
@@ -95,7 +105,8 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
   },
   {
     name: 'backward',
-    description: 'Recule de N centimètres.',
+    description:
+      'DÉPLACEMENT RÉEL : recule de N centimètres. À n’appeler que si on demande de bouger.',
     parameters: {
       type: 'object',
       properties: { cm: { type: 'integer', description: 'Distance en cm.' } },
@@ -104,16 +115,51 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
   },
   {
     name: 'turn',
-    description: 'Pivote de N degrés (positif = droite, négatif = gauche).',
+    description:
+      'DÉPLACEMENT RÉEL : pivote sur place de N degrés (positif = droite, négatif = gauche).',
     parameters: {
       type: 'object',
       properties: { deg: { type: 'integer', description: 'Angle en degrés.' } },
       required: ['deg'],
     },
   },
-  { name: 'nod', description: 'Hoche la tête (oui) — geste numéro de cirque.' },
-  { name: 'bow', description: 'Fait une révérence.' },
-  { name: 'wiggle', description: 'Se dandine (frétille) de façon rigolote.' },
+  {
+    name: 'circle',
+    description:
+      'DÉPLACEMENT RÉEL : roule en rond. Le numéro dont Mochi est le plus fier. '
+      + "À n'appeler que si on demande un rond, un cercle, ou de tourner autour de quelque chose.",
+    parameters: {
+      type: 'object',
+      properties: {
+        radius_cm: {
+          type: 'integer',
+          minimum: 10,
+          maximum: 100,
+          description: 'Rayon du rond en cm (10 = tout petit, 100 = large).',
+        },
+        turns: {
+          type: 'number',
+          minimum: 0.25,
+          maximum: 3,
+          description: 'Nombre de tours (1 = un rond complet, défaut 1).',
+        },
+        dir: { type: 'string', enum: ['left', 'right'], description: 'Sens du rond.' },
+        speed: {
+          type: 'string',
+          enum: ['slow', 'normal', 'fast'],
+          description:
+            "Allure. normal par défaut ; fast = à fond, pour frimer ; slow = tout doux.",
+        },
+      },
+      required: ['radius_cm', 'dir'],
+    },
+  },
+  {
+    name: 'nod',
+    description: 'DÉPLACEMENT RÉEL : hoche la tête (oui) en basculant sur ses roues.',
+  },
+  { name: 'bow', description: 'DÉPLACEMENT RÉEL : fait une révérence.' },
+  { name: 'wiggle', description: 'DÉPLACEMENT RÉEL : se dandine (frétille) de façon rigolote.' },
   // --- Emotes (petites particules expressives autour de Mochi) ---
   {
     name: 'emote',

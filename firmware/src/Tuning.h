@@ -21,6 +21,10 @@ class Tuning {
   // `io` doit survivre à l'objet (instance statique côté main.cpp).
   void begin(Balance* balance, Console& io); // recharge les réglages sauvés (NVS) s'ils existent
   void poll();                  // à appeler régulièrement depuis commsTask (cœur 0)
+  // Sauvegarde demandée par le canal de COMMANDES (OP_SAVE), pas par la console.
+  // On ne fait que poser un drapeau : l'écriture NVS peut bloquer plusieurs ms et
+  // n'a rien à faire dans un callback NimBLE, qui doit rendre la main vite.
+  void requestSave() { saveRequest_ = true; }
   // Stream actif ? (la LED d'état clignote vite pendant une capture — repère visuel)
   bool streaming() const { return stream_; }
 
@@ -46,6 +50,7 @@ class Tuning {
   // l'autre — le bug du 13/08, cf. l'en-tête de Console.h.
   char buf_[Console::SRC_COUNT][48];
   size_t len_[Console::SRC_COUNT] = {0, 0};
+  volatile bool saveRequest_ = false;
   bool stream_ = false;
   uint32_t lastStreamMs_ = 0;
 };

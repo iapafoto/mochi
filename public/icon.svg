@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Icône d'écran d'accueil. Marges généreuses (le visage tient dans les 80 %
+       centraux) parce que `purpose: maskable` autorise Android à rogner les bords
+       en cercle ou en goutte selon le lanceur. -->
+  <rect width="512" height="512" fill="#1a1030"/>
+  <g fill="#8fd4ff">
+    <!-- Yeux : deux arcs épais, la forme au repos de faceState (paupières hautes). -->
+    <rect x="150" y="196" width="54" height="86" rx="27"/>
+    <rect x="308" y="196" width="54" height="86" rx="27"/>
+  </g>
+  <!-- Sourire. -->
+  <path d="M198 330 Q256 378 314 330" fill="none" stroke="#ff8fd0"
+        stroke-width="26" stroke-linecap="round"/>
+</svg>

@@ -80,6 +80,13 @@ void Balance::zeroOffsetHere() {
   clearAngleInteg(); // le zéro vient de bouger : ∫θ et sa graine ne valent plus rien
 }
 
+bool Balance::captureZeroHere() {
+  // Cf. ZERO_CAPTURE_MAX_DEG dans config.h pour le pourquoi de ce seuil large.
+  if (fabsf(pitchDeg_) > ZERO_CAPTURE_MAX_DEG) return false;
+  zeroOffsetHere();
+  return true;
+}
+
 void Balance::cutMotors(uint8_t cause) {
   // ⚠️ Photographier l'état AVANT resetControl(), qui remet motorSpeedMmS_ à 0 :
   // sinon le journal rapporterait « v=0 » pour toutes les coupures, c'est-à-dire
@@ -869,6 +876,23 @@ void Balance::onCommand(uint8_t op, const uint8_t* payload, size_t len) {
     case OP_CALIBRATE:
       requestImuCalibration();
       break;
+    case OP_ZERO_HERE:
+      // Silence si refusé : le pilote a la télémétrie pour le voir (l'assiette ne
+      // retombe pas à zéro), et l'app applique déjà la même garde avant d'émettre.
+      captureZeroHere();
+      break;
+    case OP_ZERO_ADOPT:
+      adoptSuggestedOffset();
+      break;
+    case OP_ARM: {
+      // Armer reste un acte VOLONTAIRE : aucun déplacement ne le fait implicitement.
+      // Un robot qui s'arme parce qu'on lui a demandé d'avancer, c'est un robot qui se
+      // met debout tout seul dans sa caisse de transport.
+      const bool on = len >= 1 && payload[0] != 0;
+      if (!on) stopMotion(); // sinon la consigne dormirait jusqu'au prochain armement
+      setArmed(on);
+      break;
+    }
     default:
       break; // opcode inconnu : ignoré
   }
@@ -1067,6 +1091,6 @@ TelemetryPacket Balance::telemetry() const {
   p.pitchCdeg = (int16_t)lroundf(pitchDeg_ * 100.0f);
   p.wheelSpeed = (int16_t)lroundf(motorSpeedMmS_);
   p.distanceMm = SONAR_NO_ECHO; // renseigné par main.cpp (fusion avec le sonar)
-  p.flags = motorsOn_ ? TELEM_FLAG_MOTORS : 0;
+  p.flags = (motorsOn_ ? TELEM_FLAG_MOTORS : 0) | (armed_ ? TELEM_FLAG_ARMED : 0);
   return p;
 }

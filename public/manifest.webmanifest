@@ -1,0 +1,20 @@
+{
+  "name": "Mochi",
+  "short_name": "Mochi",
+  "description": "Le visage de Mochi, petit robot équilibriste kawaii",
+  "start_url": ".",
+  "scope": ".",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "any",
+  "background_color": "#1a1030",
+  "theme_color": "#1a1030",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

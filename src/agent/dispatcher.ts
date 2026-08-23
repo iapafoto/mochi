@@ -2,7 +2,8 @@ import type { FaceState } from '../face/faceState';
 import { express, look, blink, wink, type Emotion, type LookDir } from '../face/expressions';
 import type { SoundEngine, SoundName } from '../audio/sounds';
 import type { Transport } from '../robot/transport';
-import { Op, LookCode } from '../robot/transport';
+import { Op } from '../robot/transport';
+import { DriveLoop, circleDrive, CIRCLE_SPEEDS, type CircleSpeed } from '../robot/driveLoop';
 import type { IntentCall } from './intents';
 import type { MoodEngine } from '../affect/mood';
 import type { EmoteLayer, EmoteKind } from '../fx/emotes';
@@ -16,7 +17,7 @@ export interface DispatchResult {
 }
 
 /**
- * Route un IntentCall vers le visage (réel), le son et/ou le transport (mock).
+ * Route un IntentCall vers le visage, le son et/ou le transport.
  * C'est le point unique de traduction « intention → effet ».
  */
 export class Dispatcher {
@@ -26,6 +27,8 @@ export class Dispatcher {
     private readonly transport: Transport,
     private readonly mood?: MoodEngine,
     private readonly emotes?: EmoteLayer,
+    /** Pilote des trajectoires continues (ronds). Absent = pas de courbes. */
+    private readonly drive?: DriveLoop,
   ) {}
 
   dispatch(call: IntentCall): DispatchResult {
@@ -57,25 +60,52 @@ export class Dispatcher {
         return ok(call.name, side);
       }
       case 'look': {
+        // REGARD SEUL — volontairement plus de OP_LOOK ici.
+        // Le modèle appelle look à presque chaque réplique : sur un mock c'était
+        // gratuit, sur roues ça donnait un robot qui pivote sans arrêt, use ses
+        // A4988 et sa batterie pour dire « je regarde à gauche ». Tourner le CORPS
+        // reste possible — c'est `turn`, que le modèle n'appelle que si on le demande.
         const dir = String(a.dir ?? 'center') as LookDir;
         look(this.face, dir);
-        this.transport.sendIntent(Op.LOOK, LookCode[dir] ?? 0); // v2 : oriente aussi la base
         return ok(call.name, dir);
       }
 
-      // --- Mouvement (mocké) ---
+      // --- Déplacement réel ---
       case 'forward':
         this.sound.play('move');
+        this.preempt();
         this.transport.sendIntent(Op.FORWARD, int(a.cm));
         return ok(call.name, `${int(a.cm)} cm`);
       case 'backward':
         this.sound.play('move');
+        this.preempt();
         this.transport.sendIntent(Op.BACKWARD, int(a.cm));
         return ok(call.name, `${int(a.cm)} cm`);
       case 'turn':
         this.sound.play('move');
+        this.preempt();
         this.transport.sendIntent(Op.TURN, int(a.deg));
         return ok(call.name, `${int(a.deg)}°`);
+      case 'circle': {
+        if (!this.drive) return { name: call.name, ok: false, detail: 'pas de pilote de trajectoire' };
+        const dir = a.dir === 'left' ? 'left' : 'right';
+        const radius = int(a.radius_cm) || 30;
+        const turns = num(a.turns, 1);
+        // Allure inconnue → `normal`, jamais `fast` : un modèle qui invente une valeur
+        // ne doit pas pouvoir lancer le robot à fond de course par accident.
+        const speed: CircleSpeed = (String(a.speed) in CIRCLE_SPEEDS
+          ? (a.speed as CircleSpeed)
+          : 'normal');
+        const { vec, durationMs } = circleDrive(radius, turns, dir, speed);
+        this.sound.play('move');
+        this.drive.run(vec, durationMs);
+        return ok(
+          call.name,
+          `r=${radius} cm, ${turns} tour(s) à ${dir === 'left' ? 'gauche' : 'droite'}, ${speed} ` +
+            `(${Math.round(vec.speedMmS)} mm/s, ${Math.round(Math.abs(vec.turnDegS))} °/s, ` +
+            `${(durationMs / 1000).toFixed(1)} s)`,
+        );
+      }
       case 'nod':
         this.transport.sendIntent(Op.NOD);
         return ok(call.name, '');
@@ -89,6 +119,15 @@ export class Dispatcher {
       default:
         return { name: call.name, ok: false, detail: 'intention inconnue' };
     }
+  }
+
+  /**
+   * Coupe une trajectoire continue avant un déplacement ponctuel.
+   * Sans ça, le rond réémet sa consigne 10 fois par seconde et écrase le FORWARD
+   * dans les 100 ms : l'ordre part bien, et le robot continue son rond.
+   */
+  private preempt(): void {
+    this.drive?.stop();
   }
 }
 

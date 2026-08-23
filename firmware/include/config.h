@@ -169,6 +169,17 @@ constexpr uint8_t MPU_DLPF_CFG = 3;
 // correct — quand `o*` s'éloigne de `o`, c'est là qu'il faut refaire un `Z`.
 constexpr float BALANCE_OFFSET_DEG = 20.96f;
 
+// Fenêtre dans laquelle OP_ZERO_HERE accepte de capturer une pose.
+// ⚠️ C'est un rejet de l'ABSURDE, pas un contrôle de précision — et ça ne peut pas
+// être autre chose : `pitchDeg_` est déjà mesuré PAR RAPPORT au zéro courant, donc
+// un zéro faux décale la mesure qui devrait le détecter. Large exprès : il faut
+// laisser passer une main qui tient le robot droit alors que `o` est encore à
+// côté de la plaque, et refuser le robot COUCHÉ. Sans ce garde-fou, un `z` envoyé
+// par mégarde sur un robot à plat graverait « couché = équilibré », et la boucle
+// lancerait les roues à fond pour tenir cette assiette au réarmement suivant.
+// La console `z`, elle, n'en a pas besoin : l'humain voit ce qu'il fait.
+constexpr float ZERO_CAPTURE_MAX_DEG = 45.0f;
+
 // --- Orientation du MPU (faits physiques du montage) ---
 // Rechargés par `f`/defauts usine (via applyDefaultTuning) pour reproduire un
 // montage cohérent sans tout recalibrer. Convention : penché en AVANT = pitch > 0.

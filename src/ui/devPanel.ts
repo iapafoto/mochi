@@ -1,11 +1,24 @@
 import type { IntentCall } from '../agent/intents';
-import type { MotorEvent } from '../robot/mockTransport';
+import type { MotorEvent } from '../robot/transport';
+import { RobotState, type Telemetry } from '../robot/bleProfile';
 import { LIVE_VOICES, DEFAULT_VOICE, DEFAULT_PITCH, type LiveStatus } from '../agent/live';
 
 export interface DevPanelHandlers {
   onIntent(call: IntentCall): void;
   onSend(text: string): void;
   onConnect(): void;
+  /** Arme (true) ou désarme (false) les moteurs — le robot boote DÉSARMÉ. */
+  onArm(on: boolean): void;
+  /** Recalibre l'IMU (robot tenu VERTICAL et immobile ~2 s). */
+  onCalibrate(): void;
+  /** « La pose actuelle est le zéro » (console `z`). */
+  onZeroHere(): void;
+  /** Adopte le zéro que l'intégrale a convergé (console `Z`). */
+  onZeroAdopt(): void;
+  /** Persiste les réglages en NVS (console `w`). */
+  onSave(): void;
+  /** L'armement doit-il capturer le zéro au passage ? */
+  onZeroOnArmChange(on: boolean): void;
   onToggleMute(muted: boolean): void;
   /** Début d'écoute micro (pression du bouton push-to-talk). */
   onVoiceStart(): void;
@@ -22,6 +35,9 @@ export interface DevPanelHandlers {
   /** Change la hauteur de la voix (1 = naturelle, >1 = plus aiguë/bébé). */
   onPitchChange(factor: number): void;
 }
+
+/** Préférence mémorisée : capturer le zéro à chaque armement. */
+const ZERO_ON_ARM_KEY = 'mochi.zeroOnArm';
 
 /** Boutons de test : libellé → IntentCall. */
 const EMOTION_BTNS: [string, IntentCall][] = [
@@ -49,6 +65,9 @@ const MOTOR_BTNS: [string, IntentCall][] = [
   ['backward 20', { name: 'backward', args: { cm: 20 } }],
   ['turn +90', { name: 'turn', args: { deg: 90 } }],
   ['turn -90', { name: 'turn', args: { deg: -90 } }],
+  ['○ rond 30 ↻', { name: 'circle', args: { radius_cm: 30, turns: 1, dir: 'right' } }],
+  ['○ rond 30 ↺', { name: 'circle', args: { radius_cm: 30, turns: 1, dir: 'left' } }],
+  ['○ rond 30 ↻ vite', { name: 'circle', args: { radius_cm: 30, turns: 1, dir: 'right', speed: 'fast' } }],
   ['nod', { name: 'nod', args: {} }],
   ['bow', { name: 'bow', args: {} }],
   ['wiggle', { name: 'wiggle', args: {} }],
@@ -77,6 +96,16 @@ export class DevPanel {
   private personaSection!: HTMLElement;
   private personaEl!: HTMLTextAreaElement;
   private personaDefault = '';
+  private armBtn!: HTMLButtonElement;
+  private calibBtn!: HTMLButtonElement;
+  private zeroBtns: HTMLButtonElement[] = [];
+  private zeroOnArmBox!: HTMLInputElement;
+  // États qui commandent tous deux la disponibilité de l'arrêt d'urgence.
+  private connected = false;
+  private liveActive = false;
+  private fsBtn!: HTMLButtonElement;
+  private telemetryEl!: HTMLSpanElement;
+  private armed = false;
 
   constructor(
     private readonly root: HTMLElement,
@@ -88,12 +117,18 @@ export class DevPanel {
   private build(): void {
     this.root.innerHTML = '';
 
-    // En-tête + collapse.
-    const header = el('div', 'dp-section');
+    // En-tête : plein écran + poignée de repli. Ces deux-là vivent ENSEMBLE parce
+    // que sur téléphone l'en-tête est le bandeau qui reste visible tiroir fermé :
+    // c'est le seul endroit où un bouton est atteignable sans rouvrir le panneau.
+    const header = el('div', 'dp-section dp-header');
+    this.fsBtn = button('⛶ Plein écran', () => void this.toggleFullscreen());
+    this.fsBtn.className = 'dp-fs';
+    if (!document.documentElement.requestFullscreen) this.fsBtn.style.display = 'none';
     const collapse = button('⟩', () => this.root.classList.toggle('collapsed'));
     collapse.className = 'dp-collapse';
-    header.append(collapse);
+    header.append(this.fsBtn, collapse);
     this.root.append(header);
+    document.addEventListener('fullscreenchange', () => this.refreshFullscreenBtn());
 
     // Saisie IA.
     const aiSection = section('Parler à Mochi');
@@ -201,7 +236,7 @@ export class DevPanel {
     this.root.append(this.grid('Émotions', EMOTION_BTNS));
     this.root.append(this.grid('Actions', ACTION_BTNS));
     this.root.append(this.grid('Emotes (particules)', EMOTE_BTNS));
-    this.root.append(this.grid('Moteur (mocké)', MOTOR_BTNS));
+    this.root.append(this.grid('Déplacement (robot RÉEL)', MOTOR_BTNS));
 
     // Humeur (lecture) — valence & énergie.
     const moodSection = section('Humeur');
@@ -221,13 +256,61 @@ export class DevPanel {
     });
     muteBtn.dataset.muted = '0';
     const connectBtn = button('🤖 Connecter', () => this.h.onConnect());
-    ctlRow.append(muteBtn, connectBtn);
+    // Armement : le robot boote DÉSARMÉ (BOOT_ARMED = false). Sans ce bouton, une
+    // commande part, le firmware l'accepte, et rien ne bouge — sans le moindre
+    // message d'erreur. C'est le premier réflexe à avoir devant un robot muet.
+    this.armBtn = button('⚡ Armer', () => this.h.onArm(!this.armed));
+    this.armBtn.className = 'dp-arm';
+    this.armBtn.disabled = true; // rien à armer tant qu'aucun robot n'est au bout
+    // Calibration IMU. Le boot ne fait que le GYRO (`calcOffsets(true, false)` dans
+    // main.cpp) : les offsets de l'ACCÉLÉROMÈTRE ne sont jamais pris, et c'est eux
+    // qui ancrent l'angle fusionné à long terme. D'où un zéro effectif qui bouge
+    // d'un démarrage à l'autre même avec un `o` juste en NVS.
+    this.calibBtn = button('◎ Calibrer', () => this.h.onCalibrate());
+    this.calibBtn.disabled = true;
+    this.calibBtn.title = 'Tenir le robot VERTICAL et IMMOBILE pendant ~2 s';
+    ctlRow.append(muteBtn, connectBtn, this.armBtn, this.calibBtn);
     ctl.append(ctlRow);
     this.statusEl = document.createElement('span');
     this.statusEl.className = 'dp-status';
-    this.statusEl.textContent = 'robot : déconnecté (mock)';
-    ctl.append(this.statusEl);
+    this.statusEl.textContent = 'robot : déconnecté';
+    this.telemetryEl = document.createElement('span');
+    this.telemetryEl.className = 'dp-status';
+    ctl.append(this.statusEl, this.telemetryEl);
     this.root.append(ctl);
+
+    // Zéro d'assiette. Trois gestes qui ne se valent pas, d'où les trois boutons
+    // plutôt qu'un seul « calibrer » qui cacherait le compromis.
+    const zeroSection = section("Zéro d'assiette");
+    const zeroRow = el('div', 'dp-grid');
+    const zeroHere = button('⌖ Zéro ici', () => this.h.onZeroHere());
+    zeroHere.title = 'La pose actuelle devient 0°. Robot tenu DROIT en main. Dépannage : '
+      + 'vaut ce que vaut la main (1 à 3°).';
+    const zeroAuto = button('⊙ Zéro auto', () => this.h.onZeroAdopt());
+    zeroAuto.title = "Adopte le zéro que le robot a mesuré lui-même. À faire après "
+      + "~30 s d'équilibre CALME. C'est la méthode précise.";
+    const saveBtn = button('💾 Enregistrer', () => this.h.onSave());
+    saveBtn.title = 'Persiste en NVS. Sans ça, le zéro est perdu au prochain démarrage.';
+    zeroRow.append(zeroHere, zeroAuto, saveBtn);
+    this.zeroBtns = [zeroHere, zeroAuto, saveBtn];
+    for (const b of this.zeroBtns) b.disabled = true;
+
+    // Case à cocher mémorisée : le geste « je le tiens droit, j'arme, je le pose »
+    // est naturel, mais il ÉCRASE un zéro précis par un zéro à la main. À activer
+    // quand le zéro persisté ne sert plus, pas en régime établi.
+    const zeroOnArm = document.createElement('label');
+    zeroOnArm.className = 'dp-check';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = localStorage.getItem(ZERO_ON_ARM_KEY) === '1';
+    cb.addEventListener('change', () => {
+      localStorage.setItem(ZERO_ON_ARM_KEY, cb.checked ? '1' : '0');
+      this.h.onZeroOnArmChange(cb.checked);
+    });
+    zeroOnArm.append(cb, document.createTextNode(' capturer le zéro en armant'));
+    this.zeroOnArmBox = cb;
+    zeroSection.append(zeroRow, zeroOnArm);
+    this.root.append(zeroSection);
 
     // Log.
     const logSection = section('Log intentions moteur');
@@ -271,8 +354,11 @@ export class DevPanel {
     const hex = Array.from(e.bytes)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join(' ');
+    // `sent: false` = l'app a voulu émettre, le lien était coupé. Le distinguer
+    // évite de chercher côté firmware un ordre qui n'est jamais parti.
+    const prefix = e.sent ? '' : '⚠ (non émis) ';
     this.appendLog(
-      `<span class="time">${time}</span> <span class="op">${e.name}</span> ${
+      `<span class="time">${time}</span> ${prefix}<span class="op">${e.name}</span> ${
         e.args.length ? e.args.join(', ') : ''
       } [${hex}]`,
     );
@@ -296,6 +382,43 @@ export class DevPanel {
     if (!supported) return;
     this.personaDefault = defaultText;
     this.personaEl.value = current;
+  }
+
+  /**
+   * Bascule le plein écran du navigateur — la seule façon de faire disparaître la
+   * barre d'URL et les boutons de Chrome sans installer l'app.
+   *
+   * ⚠️ Exige un GESTE UTILISATEUR : appelé depuis le clic, jamais au chargement,
+   * sinon le navigateur rejette silencieusement.
+   */
+  private async toggleFullscreen(): Promise<void> {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        // `navigationUI: 'hide'` demande à Chrome de masquer aussi sa barre de
+        // navigation Android quand il le peut.
+        await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+        // Le but du plein écran, c'est de voir le VISAGE : on replie le tiroir dans
+        // la foulée plutôt que de faire cliquer deux fois.
+        this.root.classList.add('collapsed');
+      }
+    } catch {
+      // Safari iOS n'expose l'API que sur <video>. On le dit au lieu d'échouer en
+      // silence, et on renvoie vers le seul chemin qui marche là-bas.
+      this.logLine('⚠ plein écran refusé — passe par « Ajouter à l’écran d’accueil »');
+    }
+  }
+
+  private refreshFullscreenBtn(): void {
+    const on = !!document.fullscreenElement;
+    this.fsBtn.textContent = on ? '⛶ Quitter' : '⛶ Plein écran';
+    this.fsBtn.classList.toggle('on', on);
+  }
+
+  /** L'armement doit-il capturer le zéro ? (case à cocher mémorisée) */
+  get zeroOnArm(): boolean {
+    return this.zeroOnArmBox.checked;
   }
 
   /** Reflète l'état d'écoute micro sur le bouton. */
@@ -334,11 +457,22 @@ export class DevPanel {
 
   /** Reflète l'état actif/inactif de la conversation Live. */
   setLiveActive(active: boolean): void {
+    this.liveActive = active;
     this.liveBtn.classList.toggle('on', active);
     this.liveBtn.textContent = active ? '⏹ Arrêter la conversation' : '🎙 Démarrer la conversation';
-    this.liveStopBtn.disabled = !active;
+    this.refreshStopBtn();
     // Le push-to-talk et la conversation Live s'excluent (même micro).
     this.setVoiceEnabled(!active);
+  }
+
+  /**
+   * L'arrêt d'urgence doit être dispo DÈS QU'UN ROBOT est au bout, pas seulement
+   * pendant une conversation vocale. Il était grisé hors Live — hérité de l'époque
+   * où il ne coupait que la voix, avant qu'il ne coupe aussi les roues. Un bouton
+   * d'arrêt indisponible au moment où le robot part, c'est le pire des défauts.
+   */
+  private refreshStopBtn(): void {
+    this.liveStopBtn.disabled = !this.connected && !this.liveActive;
   }
 
   /** Affiche l'état de la session Live (connexion / écoute / Mochi parle / erreur). */
@@ -355,10 +489,43 @@ export class DevPanel {
   }
 
   setConnected(connected: boolean): void {
-    this.statusEl.textContent = connected
-      ? 'robot : connecté (mock)'
-      : 'robot : déconnecté (mock)';
+    this.connected = connected;
+    this.refreshStopBtn();
+    this.statusEl.textContent = connected ? 'robot : connecté' : 'robot : déconnecté';
     this.statusEl.classList.toggle('on', connected);
+    this.armBtn.disabled = !connected;
+    this.calibBtn.disabled = !connected;
+    for (const b of this.zeroBtns) b.disabled = !connected;
+    if (!connected) {
+      this.setArmed(false);
+      this.telemetryEl.textContent = '';
+      this.telemetryEl.classList.remove('on');
+    }
+  }
+
+  /**
+   * Reflète l'armement. La source de vérité est la TÉLÉMÉTRIE, pas le clic : c'est
+   * le robot qui désarme tout seul en tombant, et le bouton doit le dire.
+   */
+  setArmed(armed: boolean): void {
+    this.armed = armed;
+    this.armBtn.classList.toggle('on', armed);
+    this.armBtn.textContent = armed ? '⚡ Désarmer' : '⚡ Armer';
+  }
+
+  /** Lecture de télémétrie (état, inclinaison, obstacle). */
+  setTelemetry(t: Telemetry): void {
+    const state =
+      t.state === RobotState.BALANCING
+        ? '⚖ en équilibre'
+        : t.state === RobotState.FALLEN
+          ? '💥 tombé'
+          : '💤 au repos';
+    const obstacle = t.obstacle ? ` ⚠ obstacle ${t.distanceMm} mm` : '';
+    this.telemetryEl.textContent =
+      `${state} — ${t.pitchDeg.toFixed(1)}°, ${t.wheelSpeedMmS} mm/s` +
+      `${t.motorsEnabled ? '' : ' — moteurs coupés'}${obstacle}`;
+    this.telemetryEl.classList.toggle('on', t.state === RobotState.BALANCING);
   }
 }
 

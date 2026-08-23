@@ -154,7 +154,7 @@ void setup() {
   console.begin(&ble);
   tuning.begin(&balance, console); // après balance.begin() : la NVS écrase les défauts
   sonar.begin();
-  ble.begin(&balance, &console);
+  ble.begin(&balance, &console, &tuning);
   Serial.println("[Mochi] BLE advertising — pret a se connecter (app + console de tuning)");
 
   xTaskCreatePinnedToCore(balanceTask, "balance", 4096, nullptr, 5, nullptr, CORE_BALANCE);

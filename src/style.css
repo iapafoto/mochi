@@ -199,10 +199,66 @@ body {
   color: var(--text-dim);
 }
 
+.dp-header {
+  flex-direction: row !important;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
 .dp-collapse {
   align-self: flex-start;
   writing-mode: vertical-rl;
   padding: 6px 3px !important;
+  flex: 0 0 auto;
+}
+
+.dp-fs {
+  flex: 1 1 auto;
+}
+
+.dp-fs.on {
+  background: rgba(143, 212, 255, 0.24) !important;
+  border-color: rgba(143, 212, 255, 0.5) !important;
+}
+
+/* --- Téléphone : le tiroir monte du BAS ------------------------------------
+   Collé à droite, le panneau mange la moitié d'un écran de poche et sa poignée
+   tombe pile où Chrome met ses propres contrôles. En bas il ne laisse qu'un
+   bandeau, le visage garde toute la largeur, et la poignée est sous le pouce.
+   Le seuil vise le téléphone seul : sur desktop le panneau latéral reste plus
+   pratique (il ne recouvre rien et on voit tout d'un coup d'œil). */
+@media (max-width: 760px) {
+  #dev-panel {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-height: 72vh;
+    border-left: none;
+    border-top: 1px solid var(--panel-border);
+    /* viewport-fit=cover est déjà posé dans index.html : sans ce padding, la barre
+       gestuelle d'Android recouvrirait le dernier bouton du tiroir ouvert. */
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Ce qui dépasse = l'en-tête. Assez pour que « Plein écran » reste cliquable
+     sans rouvrir le tiroir. */
+  #dev-panel.collapsed {
+    transform: translateY(calc(100% - 58px));
+  }
+
+  /* La poignée redevient horizontale : c'est le bandeau visible tiroir fermé,
+     donc la plus grande cible possible. Le chevron pointe vers l'action. */
+  .dp-collapse {
+    writing-mode: horizontal-tb;
+    padding: 6px 14px !important;
+    transform: rotate(-90deg);
+  }
+
+  #dev-panel:not(.collapsed) .dp-collapse {
+    transform: rotate(90deg);
+  }
 }
 
 .dp-status {
@@ -253,6 +309,40 @@ body {
 }
 
 .dp-stop:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Case à cocher du panneau (préférences mémorisées). */
+.dp-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.85;
+  cursor: pointer;
+}
+
+.dp-check input {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
+
+/* Armement des moteurs. Voyant quand c'est ON : « armé » veut dire que le robot
+   peut partir au prochain ordre — ça ne doit pas se lire en diagonale. */
+.dp-arm {
+  font-weight: 600;
+}
+
+.dp-arm.on {
+  color: #1a1220 !important;
+  background: rgba(255, 196, 84, 0.85) !important;
+  border-color: rgba(255, 214, 130, 0.9) !important;
+}
+
+.dp-arm:disabled {
   opacity: 0.4;
   cursor: default;
 }

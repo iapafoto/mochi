@@ -107,6 +107,13 @@ void Tuning::poll() {
     }
   }
 
+  // --- Sauvegarde demandée par BLE (OP_SAVE) ---
+  // Exécutée ICI et pas dans le callback : écrire la NVS y bloquerait la pile BLE.
+  if (saveRequest_) {
+    saveRequest_ = false;
+    save();
+  }
+
   // --- Journal des coupures moteur (le diagnostic de « l'absence ») ---
   // Imprimé ICI, cœur 0 : la boucle d'équilibre latche l'événement et repart, elle
   // ne peut pas se permettre un printf. Si le robot a une absence et que RIEN ne

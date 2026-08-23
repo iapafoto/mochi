@@ -1,8 +1,8 @@
 // Transport actionneur — interface + protocole fil.
 //
-// Le reste du code ne connaît QUE cette interface. En v1 : mockTransport
-// (log). En v2 : bleTransport (Web Bluetooth). Message compact = 1 octet
-// opcode + params (pas de JSON ; MTU BLE réduit en v2).
+// Le reste du code ne connaît QUE cette interface. Deux implémentations :
+// `MockTransport` (journalise, sans robot) et `BleTransport` (Web Bluetooth).
+// Message compact = 1 octet opcode + params (pas de JSON ; MTU BLE réduit).
 
 export const Op = {
   STOP: 0x00,
@@ -19,6 +19,13 @@ export const Op = {
   WIGGLE: 0x12,
   LOOK: 0x20, // int8 dir
   CALIBRATE: 0x30, // recalibre l'IMU (robot immobile+vertical, ~2 s, moteurs coupés)
+  // Le robot boote DÉSARMÉ (BOOT_ARMED = false) : sans ARM, tout déplacement est
+  // reçu et ignoré en silence côté firmware. Cf. protocol.h.
+  ARM: 0x31, // uint8 0/1
+  // Zéro d'assiette (cf. protocol.h) : équivalents BLE des consoles `z`, `Z`, `w`.
+  ZERO_HERE: 0x32, // la pose actuelle devient 0° — rapide, vaut ce que vaut la main
+  ZERO_ADOPT: 0x33, // adopte le zéro que ∫θ a convergé — lent, mais précis
+  SAVE: 0x34, // persiste en NVS : sans lui, rien ne survit au reboot
 } as const;
 
 export type Opcode = (typeof Op)[keyof typeof Op];
@@ -34,20 +41,39 @@ export function opName(op: number): string {
   return OP_NAMES[op] ?? `0x${op.toString(16).padStart(2, '0')}`;
 }
 
+/**
+ * Événement émis à chaque intention moteur, pour le panneau debug.
+ *
+ * Il vit ICI et pas dans mockTransport parce que le journal vaut surtout quand le
+ * robot est VRAI : c'est la trace qui permet de dire « l'app a bien émis, c'est en
+ * face que ça coince ». Le laisser côté mock l'aurait fait disparaître au moment
+ * exact où il devient utile.
+ */
+export interface MotorEvent {
+  op: number;
+  name: string;
+  args: number[];
+  bytes: Uint8Array;
+  t: number; // timestamp ms
+  /** false = l'app a voulu émettre mais le lien était coupé (rien n'est parti). */
+  sent: boolean;
+}
+
 export interface Transport {
-  /** v1 mock : no-op ; v2 : Web Bluetooth. */
   connect(): Promise<void>;
   disconnect(): void;
   get connected(): boolean;
   /** Envoie une intention moteur (opcode + arguments entiers). */
   sendIntent(op: number, ...args: number[]): void;
-  /** v2 : télémétrie remontée par l'ESP32. */
+  /** Télémétrie remontée par l'ESP32 (paquet brut ; cf. parseTelemetry). */
   onTelemetry(cb: (state: DataView) => void): void;
+  /** Journal des intentions émises (panneau debug). */
+  onMotorEvent(cb: (e: MotorEvent) => void): void;
 }
 
 /**
  * Encode un message fil : 1 octet opcode + params.
- * FORWARD/BACKWARD/TURN → int16 LE. LOOK → int8. Le reste → sans param.
+ * FORWARD/BACKWARD/TURN → int16 LE. LOOK/ARM → uint8. Le reste → sans param.
  */
 export function encodeMessage(op: number, args: number[]): Uint8Array {
   switch (op) {
@@ -75,7 +101,15 @@ export function encodeMessage(op: number, args: number[]): Uint8Array {
     case Op.LOOK: {
       return new Uint8Array([op, (args[0] | 0) & 0xff]);
     }
+    case Op.ARM: {
+      return new Uint8Array([op, args[0] ? 1 : 0]);
+    }
     default:
       return new Uint8Array([op]);
   }
+}
+
+/** Fabrique l'événement de journal correspondant à une intention. */
+export function motorEvent(op: number, args: number[], sent: boolean): MotorEvent {
+  return { op, name: opName(op), args, bytes: encodeMessage(op, args), t: Date.now(), sent };
 }

@@ -1,16 +1,19 @@
 import { defineConfig } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
-// Le port peut être imposé par l'environnement (préview Claude avec autoPort :
-// il fournit un port libre via PORT). Sinon, 5173 par défaut en local.
-const port = process.env.PORT ? Number(process.env.PORT) : 5173;
+// PORT CANONIQUE DU PROJET : 5174. C'est l'adresse enregistrée sur le téléphone
+// (`https://<ip>:5174/mochi/`), là où s'affiche le visage de Mochi — elle ne doit
+// donc jamais bouger. Un PORT dans l'environnement reste prioritaire (preview).
+const port = process.env.PORT ? Number(process.env.PORT) : 5174;
 
-// En local, on FIGE le port sur 5173 pour que l'URL du téléphone ne change jamais
-// (`https://<ip>:5173/mochi/`). Sans ça, si 5173 est occupé Vite glisse en 5174 et
-// l'URL change. strictPort => si 5173 est déjà pris (vieux serveur resté ouvert),
-// le lancement échoue avec un message clair au lieu de changer de port en silence.
-// On ne force PAS le strict quand un PORT externe est fourni (preview Claude).
-const strictPort = !process.env.PORT;
+// strictPort TOUJOURS, y compris quand le port vient de l'environnement.
+// ⚠️ Le défaut de Vite est de GLISSER sur le port suivant quand le sien est pris.
+// C'est exactement ce qui fait qu'on se retrouve un jour à servir sur 5175 pendant
+// que le téléphone interroge 5174 et affiche une page blanche — sans rien dans les
+// logs, puisque de son point de vue tout va bien. Échouer au lancement avec
+// « port is already in use » coûte dix secondes ; l'URL qui bouge en silence coûte
+// une demi-heure. Si ça refuse de démarrer : un vieux serveur traîne encore.
+const strictPort = true;
 
 // HTTPS optionnel (certificat auto-signé) : nécessaire pour tester le MICRO sur
 // un téléphone via le WiFi (getUserMedia exige un contexte sécurisé). Activé par
