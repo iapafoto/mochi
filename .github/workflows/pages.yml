@@ -1,0 +1,75 @@
+# Déploiement de l'app web sur GitHub Pages → https://iapafoto.github.io/mochi/
+#
+# ⚠️ PRÉREQUIS : le dépôt doit s'appeler `mochi` EN MINUSCULES. Pages sert sous le
+# nom du dépôt et github.io est sensible à la casse ; c'est ce qui permet de
+# garder UN SEUL `base: '/mochi/'` pour Pages et pour OVH (cf. vite.config.ts).
+#
+# POURQUOI PAGES PLUTÔT QUE LE SERVEUR DU PC : le zéro clic exige une origine à
+# CERTIFICAT VALIDE. Le `dev:https` du PC est auto-signé, donc Chrome refuse
+# d'installer la PWA — et sans app installée, la politique d'autoplay garde la
+# voix en veille tant qu'un doigt n'a pas touché l'écran. Pages donne un vrai
+# certificat et une origine STABLE (l'IP du PC, elle, bouge avec le DHCP, et
+# chaque changement fait perdre l'appairage BLE et l'autorisation micro).
+#
+# Rien de secret n'est publié : la clé Gemini vit dans le localStorage du
+# téléphone, jamais dans le bundle (cf. src/agent/apiKey.ts).
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Permet de déployer une branche de travail à la main (Actions → Run workflow)
+  # sans avoir à fusionner dans main juste pour faire une démo.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Une seule publication à la fois ; on ne coupe pas celle qui est en cours.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Le tampon de build affiché dans le panneau contient le hash court du
+          # commit : sans l'historique, `git rev-parse` renverrait autre chose.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # `base` est en dur dans vite.config.ts et vaut /mochi/ pour les deux
+      # cibles : rien à surcharger ici, tant que le dépôt reste en minuscules.
+      - run: npm run build
+
+      - name: Retirer les fichiers propres à OVH
+        # Ces trois-là n'ont aucun sens sur un hébergement statique — et surtout
+        # ILS SERAIENT PUBLIÉS TELS QUELS. `.htpasswd` contient le hash du mot de
+        # passe Basic Auth : le laisser partir, c'est l'offrir au cassage hors
+        # ligne. Apache n'interprète rien ici, donc `.htaccess` ne protège plus
+        # rien non plus. Le PHP, lui, ne s'exécute pas : l'app le sait et dit
+        # d'aller coller la clé dans le panneau (cf. agent/live.ts).
+        run: rm -rf dist/api dist/.htaccess dist/.htpasswd
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
