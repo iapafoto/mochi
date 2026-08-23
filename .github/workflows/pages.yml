@@ -57,15 +57,6 @@ jobs:
       # cibles : rien à surcharger ici, tant que le dépôt reste en minuscules.
       - run: npm run build
 
-      - name: Retirer les fichiers propres à OVH
-        # Ces trois-là n'ont aucun sens sur un hébergement statique — et surtout
-        # ILS SERAIENT PUBLIÉS TELS QUELS. `.htpasswd` contient le hash du mot de
-        # passe Basic Auth : le laisser partir, c'est l'offrir au cassage hors
-        # ligne. Apache n'interprète rien ici, donc `.htaccess` ne protège plus
-        # rien non plus. Le PHP, lui, ne s'exécute pas : l'app le sait et dit
-        # d'aller coller la clé dans le panneau (cf. agent/live.ts).
-        run: rm -rf dist/api dist/.htaccess dist/.htpasswd
-
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

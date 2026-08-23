@@ -2,8 +2,9 @@
  * Où vit la clé Gemini — et pourquoi elle vit là.
  *
  * Elle est stockée dans le `localStorage` DU TÉLÉPHONE, saisie une fois dans le
- * panneau debug. Ça ressemble à un recul par rapport au jeton éphémère fabriqué
- * côté serveur (`public/api/live-token.php`), ça n'en est pas un :
+ * panneau debug. Ça ressemble à un recul par rapport à un jeton éphémère fabriqué
+ * côté serveur (ce que faisait le déploiement OVH, retiré depuis), ça n'en est
+ * pas un :
  *
  *  - le `localStorage` est cloisonné par ORIGINE et par APPAREIL. Un visiteur de
  *    la page publique reçoit une app sans clé, qui lui en demande une ; la tienne
@@ -18,8 +19,8 @@
  * plafond de quota côté Google Cloud borne les dégâts si un jour un build
  * compromis part en ligne. Pour une clé de robot perso, c'est proportionné.
  *
- * Le chemin `tokenEndpoint` reste en place dans live.ts : tant que le
- * déploiement OVH tourne, il sert de repli quand aucune clé n'est saisie.
+ * C'est désormais le SEUL accès à Gemini : sans clé saisie, la voix Live est
+ * indisponible et l'agent texte retombe sur les mots-clés locaux.
  */
 
 const STORAGE_KEY = 'mochi.geminiKey';

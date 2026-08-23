@@ -56,17 +56,6 @@ const VAD_PREFIX_MS = 50; // durée de parole avant de committer le début de to
 
 export type LiveStatus = 'idle' | 'connecting' | 'listening' | 'speaking' | 'error';
 
-/**
- * Comment atteindre Gemini pour le Live :
- *  - `apiKey` : clé brute (DEV local uniquement — jamais dans un build public).
- *  - `tokenEndpoint` : URL qui renvoie un jeton éphémère (PROD). La vraie clé
- *    reste côté serveur ; le navigateur n'obtient qu'un jeton court.
- */
-export interface LiveAccess {
-  apiKey?: string;
-  tokenEndpoint?: string;
-}
-
 export interface LiveConversationCallbacks {
   onStatus(status: LiveStatus, detail?: string): void;
   /** Transcription de ce que dit l'utilisateur (micro). */
@@ -100,7 +89,8 @@ export class LiveConversation {
   private userFlushed = false;
 
   constructor(
-    private readonly access: LiveAccess,
+    /** Clé Gemini de cet appareil (cf. agent/apiKey.ts) — le seul accès possible. */
+    private readonly apiKey: string,
     private readonly cb: LiveConversationCallbacks,
   ) {
     this.player = new VoicePlayer({
@@ -164,28 +154,6 @@ export class LiveConversation {
   }
 
   /** Construit un client Gemini : clé saisie sur l'appareil, ou jeton éphémère. */
-  private async resolveClient(): Promise<GoogleGenAI> {
-    if (this.access.apiKey) {
-      return new GoogleGenAI({ apiKey: this.access.apiKey });
-    }
-    if (this.access.tokenEndpoint) {
-      const res = await fetch(this.access.tokenEndpoint, { cache: 'no-store' });
-      // Un 404 ici n'est pas une panne : c'est un hébergement SANS PHP (pages
-      // statiques) et aucune clé saisie sur l'appareil. Le dire, parce que
-      // « jeton indisponible (404) » envoie chercher du côté du serveur alors
-      // que le correctif tient en un champ du panneau.
-      if (res.status === 404) {
-        throw new Error('pas de serveur de jetons ici — colle ta clé dans « Clé Gemini »');
-      }
-      if (!res.ok) throw new Error(`jeton indisponible (${res.status})`);
-      const token = (await res.text()).trim();
-      if (!token) throw new Error('jeton vide renvoyé par le serveur');
-      // Les jetons éphémères passent par l'API v1alpha.
-      return new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1alpha' } });
-    }
-    throw new Error('aucun accès Gemini configuré (ni clé ni endpoint)');
-  }
-
   /** Ouvre la session et lance le micro. `systemInstruction` = persona courant. */
   async start(systemInstruction: string): Promise<void> {
     if (this.session) return;
@@ -195,7 +163,7 @@ export class LiveConversation {
     await this.player.resume(); // dans le geste utilisateur (clic « démarrer »)
 
     try {
-      const ai = await this.resolveClient(); // clé brute (dev) ou jeton éphémère (prod)
+      const ai = new GoogleGenAI({ apiKey: this.apiKey });
       this.session = await ai.live.connect({
         model: MODEL,
         callbacks: {

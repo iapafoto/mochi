@@ -12,7 +12,7 @@ import { Dispatcher } from './agent/dispatcher';
 import { DevPanel } from './ui/devPanel';
 import type { Agent } from './agent/agent';
 import { createAgent } from './agent/agent';
-import { LiveConversation, type LiveAccess } from './agent/live';
+import { LiveConversation } from './agent/live';
 import { loadGeminiKey, saveGeminiKey, hasStoredKey } from './agent/apiKey';
 import { setupPwa } from './pwa';
 import { DEFAULT_PERSONA, buildSystemInstruction } from './agent/persona';
@@ -276,19 +276,11 @@ agent = createAgent(
   geminiKey,
 );
 
-// Conversation vocale Live (vraie voix streamée).
-// - Clé présente (saisie sur l'appareil, ou `.env.local` en dev) : on l'utilise.
-// - Sinon, en prod : repli sur le jeton éphémère de /api/live-token.php, tant que
-//   le déploiement OVH tourne. C'est ce repli qui permet de basculer vers un
-//   hébergement statique sans rien casser en route.
+// Conversation vocale Live (vraie voix streamée). Sans clé, pas de Live : le
+// bouton se grise et le panneau renvoie vers la section « Clé Gemini ».
 // Les sons kawaii sont coupés pendant la session pour ne pas parasiter la voix.
-const liveAccess: LiveAccess | null = geminiKey
-  ? { apiKey: geminiKey }
-  : import.meta.env.PROD
-    ? { tokenEndpoint: import.meta.env.BASE_URL + 'api/live-token.php' }
-    : null;
-if (liveAccess) {
-  live = new LiveConversation(liveAccess, {
+if (geminiKey) {
+  live = new LiveConversation(geminiKey, {
     onStatus: (status, detail) => {
       panel.setLiveStatus(status, detail);
       if (status === 'error' && detail) panel.logLine(`⚠ Live : ${detail}`);
