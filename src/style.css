@@ -363,3 +363,11 @@ body {
     box-shadow: 0 0 0 7px rgba(255, 143, 208, 0.06);
   }
 }
+
+/* Jauge micro : chasse FIXE, sinon les blocs changent de largeur à chaque
+   rafraîchissement et la ligne tremble à 7 Hz — illisible, et fatigant. */
+.dp-miclevel {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: -0.5px;
+  white-space: nowrap;
+}

@@ -10,10 +10,23 @@
 
 const WORKLET_URL = new URL('./pcm-recorder.worklet.js', import.meta.url);
 
+/** Période de remontée du niveau micro — assez lent pour l'œil, assez vif pour parler. */
+const LEVEL_PERIOD_MS = 150;
+
 export interface MicCallbacks {
   /** Un paquet PCM 16 bits @ 16 kHz, encodé base64, prêt à envoyer. */
   onChunk(base64Pcm16: string): void;
   onError(message: string): void;
+  /**
+   * Niveau crête (0..1) du dernier paquet, ÉMIS MÊME QUAND L'ENVOI EST COUPÉ —
+   * `sending` dit lequel des deux cas on est en train de regarder.
+   *
+   * ⚠️ C'est toute la valeur de cette mesure : « le micro ne t'entend pas » et
+   * « le micro t'entend très bien mais on jette, parce que Mochi parle » se
+   * ressemblent trait pour trait vu du fauteuil, et appellent des correctifs
+   * opposés. Sans ce chiffre on règle la sensibilité d'un micro qui marche.
+   */
+  onLevel?(peak: number, sending: boolean): void;
 }
 
 export class MicCapture {
@@ -23,8 +36,58 @@ export class MicCapture {
   private source: MediaStreamAudioSourceNode | null = null;
   private _active = false;
   private _sending = true;
+  private _processing = false; // cf. setProcessing : mesuré au banc le 23/08
+  private _gain = 1;
+  private boost: GainNode | null = null;
+  private lastLevelMs = 0;
+  private peakAcc = 0;
 
   constructor(private readonly cb: MicCallbacks) {}
+
+  /**
+   * Traitement « téléphonie » du navigateur (annulation d'écho + réduction de
+   * bruit). Pris en compte au prochain `start()`.
+   *
+   * ⚠️ DÉSACTIVÉ PAR DÉFAUT, ET C'EST UNE MESURE, PAS UNE PRÉFÉRENCE (23/08).
+   * Avec, sur Android : à ~5 cm ça marche à tous les coups, à 50 cm ça ne marche
+   * JAMAIS — une falaise, pas une dégradation. Sans, « il entend beaucoup mieux ».
+   * `echoCancellation` fait basculer la capture sur la source VOICE_COMMUNICATION,
+   * réglée pour un téléphone tenu CONTRE LA BOUCHE ; sur une voix lointaine et
+   * réverbérée son traitement retire du contenu de PAROLE en même temps que le
+   * bruit. L'AGC rattrape ensuite le niveau — donc la jauge reste belle — pendant
+   * que la structure fine qui porte l'intelligibilité est déjà partie. C'est ce
+   * qui rend la panne si trompeuse : tous les voyants sont au vert.
+   *
+   * ⚠️ LES DEUX SONT LIÉS À UN SEUL INTERRUPTEUR EXPRÈS : sur Android ils ne sont
+   * pas indépendants. C'est `echoCancellation` qui CHOISIT la source de capture,
+   * et le reste de la chaîne de traitement vient avec, quoi que dise le drapeau
+   * `noiseSuppression`. Les exposer séparément promettrait un réglage qui n'existe
+   * pas.
+   *
+   * L'anti-larsen ne repose pas sur ce traitement ici : LiveConversation coupe
+   * déjà l'envoi pendant que Mochi parle. À surveiller quand même — sans AEC, la
+   * queue de réverbération de sa voix peut passer dans les 140 ms de rémanence.
+   * Si Mochi finit par se répondre à lui-même, c'est là qu'il faut regarder.
+   */
+  setProcessing(on: boolean): void {
+    this._processing = on;
+  }
+
+  /**
+   * Gain logiciel appliqué AVANT la conversion en Int16. Effet immédiat, sans
+   * rouvrir le flux — contrairement au traitement, qui est figé à l'ouverture.
+   *
+   * ⚠️ CE QU'IL PEUT ET CE QU'IL NE PEUT PAS. Il rattrape une ATTÉNUATION (à 50 cm
+   * contre 5, la voix arrive ~10× plus petite : de la physique, 20 dB, rien de
+   * cassé). Il ne rattrape RIEN d'une porte de bruit : ce que le suppresseur a
+   * effacé n'existe plus dans l'échantillon, et l'amplifier ne remonte que le
+   * souffle. D'où l'ordre des essais — décocher le traitement D'ABORD, monter le
+   * gain ensuite. Si le gain seul rendait la parole, on aurait la réponse.
+   */
+  setGain(g: number): void {
+    this._gain = Math.max(1, Math.min(8, g));
+    if (this.boost) this.boost.gain.value = this._gain;
+  }
 
   get active(): boolean {
     return this._active;
@@ -40,8 +103,10 @@ export class MicCapture {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
+          echoCancellation: this._processing,
+          noiseSuppression: this._processing,
+          // GARDÉ dans les deux cas : c'est le seul des trois qui AIDE une voix
+          // lointaine, en remontant le gain au lieu de la raboter.
           autoGainControl: true,
           channelCount: 1,
         },
@@ -68,9 +133,18 @@ export class MicCapture {
     this.source = this.ctx.createMediaStreamSource(this.stream);
     this.node = new AudioWorkletNode(this.ctx, 'pcm-recorder');
     this.node.port.onmessage = (e) => {
-      if (this._sending) this.cb.onChunk(int16ToBase64(e.data as Int16Array));
+      const pcm = e.data as Int16Array;
+      this.reportLevel(pcm);
+      if (this._sending) this.cb.onChunk(int16ToBase64(pcm));
     };
-    this.source.connect(this.node);
+    // Le gain est INSÉRÉ AVANT le worklet, donc la jauge mesure ce que Gemini
+    // reçoit vraiment — et pas ce que le micro a capté. C'est le bon point de
+    // mesure : la question n'est pas « le téléphone t'entend-il » mais « qu'est-ce
+    // qui part sur le fil ».
+    this.boost = this.ctx.createGain();
+    this.boost.gain.value = this._gain;
+    this.source.connect(this.boost);
+    this.boost.connect(this.node);
     // Le node doit être « tiré » par le graphe : on le relie à la sortie. Il
     // n'écrit rien dans ses buffers de sortie → silence (aucun larsen).
     this.node.connect(this.ctx.destination);
@@ -78,10 +152,31 @@ export class MicCapture {
     return true;
   }
 
+  /**
+   * Crête sur la période, pas moyenne : c'est la parole qu'on cherche à voir, et
+   * une moyenne la noierait dans les silences entre les mots.
+   */
+  private reportLevel(pcm: Int16Array): void {
+    if (!this.cb.onLevel) return;
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i++) {
+      const v = pcm[i] < 0 ? -pcm[i] : pcm[i];
+      if (v > peak) peak = v;
+    }
+    if (peak > this.peakAcc) this.peakAcc = peak;
+    const now = Date.now();
+    if (now - this.lastLevelMs < LEVEL_PERIOD_MS) return;
+    this.lastLevelMs = now;
+    this.cb.onLevel(this.peakAcc / 32768, this._sending);
+    this.peakAcc = 0;
+  }
+
   async stop(): Promise<void> {
     this._active = false;
     if (this.node) this.node.port.onmessage = null;
     this.source?.disconnect();
+    this.boost?.disconnect();
+    this.boost = null;
     this.node?.disconnect();
     this.stream?.getTracks().forEach((t) => t.stop());
     if (this.ctx && this.ctx.state !== 'closed') {

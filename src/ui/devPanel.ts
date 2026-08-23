@@ -19,6 +19,10 @@ export interface DevPanelHandlers {
   onSave(): void;
   /** L'armement doit-il capturer le zéro au passage ? */
   onZeroOnArmChange(on: boolean): void;
+  /** Anti-écho + réduction de bruit du micro (relance la conversation en cours). */
+  onMicProcessingChange(on: boolean): void;
+  /** Gain logiciel du micro, 1..8 (effet immédiat). */
+  onMicGainChange(gain: number): void;
   onToggleMute(muted: boolean): void;
   /** Début d'écoute micro (pression du bouton push-to-talk). */
   onVoiceStart(): void;
@@ -38,6 +42,15 @@ export interface DevPanelHandlers {
 
 /** Préférence mémorisée : capturer le zéro à chaque armement. */
 const ZERO_ON_ARM_KEY = 'mochi.zeroOnArm';
+
+/** Préférence mémorisée : traitement téléphonie du micro (défaut = actif). */
+const MIC_PROCESSING_KEY = 'mochi.micProcessing';
+
+/** Préférence mémorisée : gain logiciel du micro (défaut = 1×, donc sans effet). */
+const MIC_GAIN_KEY = 'mochi.micGain';
+
+/** Nombre de blocs de la jauge micro. Assez pour voir bouger, assez court pour tenir sur une ligne. */
+const MIC_BARS = 12;
 
 /** Boutons de test : libellé → IntentCall. */
 const EMOTION_BTNS: [string, IntentCall][] = [
@@ -100,6 +113,10 @@ export class DevPanel {
   private calibBtn!: HTMLButtonElement;
   private zeroBtns: HTMLButtonElement[] = [];
   private zeroOnArmBox!: HTMLInputElement;
+  private micProcessingBox!: HTMLInputElement;
+  private micLevelEl!: HTMLSpanElement;
+  /** Gain micro restauré du localStorage — lu par main.ts au démarrage. */
+  micGain = 1;
   // États qui commandent tous deux la disponibilité de l'arrêt d'urgence.
   private connected = false;
   private liveActive = false;
@@ -210,9 +227,56 @@ export class DevPanel {
     });
     pitchRow.append(pitchLabel, pitch);
 
+    // Niveau micro. Il vaut surtout par ce qu'il permet de DISTINGUER : une barre
+    // qui bouge quand tu parles prouve que le micro te capte, et déplace la
+    // question vers l'envoi ou le modèle. Une barre plate la garde ici.
+    this.micLevelEl = document.createElement('span');
+    this.micLevelEl.className = 'dp-status dp-miclevel';
+    this.micLevelEl.textContent = '🎤 —';
+
+    // Traitement téléphonie. DÉCOCHÉ PAR DÉFAUT depuis le 23/08 : coché, Mochi
+    // devient sourd au-delà de ~50 cm (cf. MicCapture.setProcessing). Reste
+    // accessible pour le cas inverse — téléphone tenu près de la bouche dans une
+    // pièce bruyante, où le traitement redevient utile.
+    const procLabel = document.createElement('label');
+    procLabel.className = 'dp-check';
+    const procBox = document.createElement('input');
+    procBox.type = 'checkbox';
+    procBox.checked = localStorage.getItem(MIC_PROCESSING_KEY) === '1';
+    procBox.addEventListener('change', () => {
+      localStorage.setItem(MIC_PROCESSING_KEY, procBox.checked ? '1' : '0');
+      this.h.onMicProcessingChange(procBox.checked);
+    });
+    procLabel.append(procBox, document.createTextNode(' anti-écho + réduction de bruit'));
+    this.micProcessingBox = procBox;
+
+    // Gain micro. Défaut 1× : tant qu'on n'y touche pas, rien ne change.
+    const gainRow = el('div', 'dp-row');
+    const gainLabel = el('span', 'dp-status');
+    const fmtGain = (v: number) => `Gain micro ${v.toFixed(1)}×`;
+    const gain0 = parseFloat(localStorage.getItem(MIC_GAIN_KEY) ?? '1') || 1;
+    gainLabel.textContent = fmtGain(gain0);
+    const gain = document.createElement('input');
+    gain.type = 'range';
+    gain.min = '1';
+    gain.max = '8';
+    gain.step = '0.5';
+    gain.value = String(gain0);
+    gain.addEventListener('input', () => {
+      const g = parseFloat(gain.value);
+      gainLabel.textContent = fmtGain(g);
+      localStorage.setItem(MIC_GAIN_KEY, String(g));
+      this.h.onMicGainChange(g);
+    });
+    gainRow.append(gainLabel, gain);
+    this.micGain = gain0;
+
     this.liveStatusEl = document.createElement('span');
     this.liveStatusEl.className = 'dp-status';
-    liveSection.append(this.liveBtn, this.liveStopBtn, voiceRow, pitchRow, this.liveStatusEl);
+    liveSection.append(
+      this.liveBtn, this.liveStopBtn, voiceRow, pitchRow,
+      procLabel, gainRow, this.micLevelEl, this.liveStatusEl,
+    );
     this.root.append(liveSection);
 
     // Personnalité (caractère éditable) — masquée tant que l'agent ne la gère pas.
@@ -419,6 +483,25 @@ export class DevPanel {
   /** L'armement doit-il capturer le zéro ? (case à cocher mémorisée) */
   get zeroOnArm(): boolean {
     return this.zeroOnArmBox.checked;
+  }
+
+  /** Traitement téléphonie du micro demandé ? (case à cocher mémorisée) */
+  get micProcessing(): boolean {
+    return this.micProcessingBox.checked;
+  }
+
+  /**
+   * Jauge micro. `sending = false` est affiché DIFFÉREMMENT et pas masqué : voir
+   * « ça capte fort, et c'est jeté » est l'information la plus utile du lot —
+   * c'est le moment où Mochi parle et où il ne peut pas t'entendre, par choix.
+   */
+  setMicLevel(peak: number, sending: boolean): void {
+    const filled = Math.min(MIC_BARS, Math.round(peak * MIC_BARS * 1.6)); // 0,6 ≈ pleine échelle
+    const bar = '█'.repeat(filled) + '·'.repeat(MIC_BARS - filled);
+    this.micLevelEl.textContent = `${sending ? '🎤' : '🔇'} ${bar} ${peak.toFixed(2)}${
+      sending ? '' : ' (jeté — Mochi parle)'
+    }`;
+    this.micLevelEl.classList.toggle('on', sending && peak > 0.05);
   }
 
   /** Reflète l'état d'écoute micro sur le bouton. */

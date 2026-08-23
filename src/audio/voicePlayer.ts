@@ -14,6 +14,12 @@ export interface VoicePlayerCallbacks {
   onSpeaking(speaking: boolean): void;
   /** Amplitude crête 0..1 du dernier morceau (anime la bouche). */
   onLevel?(level: number): void;
+  /**
+   * Par où sort la voix, une fois `resume()` tranché. `viaElement = false` sur
+   * Android veut dire volume d'appel : c'est la cause n°1 de « Mochi ne parle pas
+   * fort », et sans ce rapport elle est INVISIBLE — le son sort quand même.
+   */
+  onRoute?(viaElement: boolean, detail: string): void;
 }
 
 export class VoicePlayer {
@@ -54,11 +60,22 @@ export class VoicePlayer {
           .then(() => {
             this.tail?.disconnect(ctx.destination); // évite le double son
             this.routedToElement = true;
+            this.cb.onRoute?.(true, 'sortie via <audio> (flux média)');
           })
-          .catch(() => {
-            /* autoplay bloqué : on reste sur ctx.destination (repli) */
+          .catch((e: Error) => {
+            // Repli sur ctx.destination. ⚠️ CE REPLI EST SILENCIEUX ET C'EST SON
+            // DÉFAUT : le son sort quand même, simplement sur le flux communication
+            // d'Android — volume d'appel, donc faible. Rien ne casse, rien ne
+            // s'affiche, et on cherche du côté du micro ou du modèle. D'où ce
+            // rapport : c'est la seule façon de savoir, depuis le téléphone, quel
+            // chemin a gagné.
+            this.cb.onRoute?.(false, `<audio> refusé (${e.name}) — repli AudioContext`);
           });
+      } else {
+        this.cb.onRoute?.(false, 'play() sans promesse — repli AudioContext');
       }
+    } else if (!this.sinkEl) {
+      this.cb.onRoute?.(false, 'pas de MediaStreamDestination — repli AudioContext');
     }
 
     if (ctx.state === 'suspended') await ctx.resume();

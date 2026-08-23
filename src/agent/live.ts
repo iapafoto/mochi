@@ -77,6 +77,10 @@ export interface LiveConversationCallbacks {
   onSpeakingChange?(speaking: boolean): void;
   /** Amplitude 0..1 de la voix (anime la bouche). */
   onLevel?(level: number): void;
+  /** Chemin de sortie audio retenu (cf. VoicePlayer) — diagnostic du volume Android. */
+  onRoute?(viaElement: boolean, detail: string): void;
+  /** Niveau crête du micro (0..1) et si le paquet part vraiment (cf. MicCapture). */
+  onMicLevel?(peak: number, sending: boolean): void;
   /** Un function call de Mochi → intention (visage/moteur). */
   dispatch(call: IntentCall): void;
 }
@@ -106,11 +110,13 @@ export class LiveConversation {
         if (this.session) this.cb.onStatus(sp ? 'speaking' : 'listening');
       },
       onLevel: (lvl) => this.cb.onLevel?.(lvl),
+      onRoute: (viaElement, detail) => this.cb.onRoute?.(viaElement, detail),
     });
     this.mic = new MicCapture({
       onChunk: (b64) =>
         this.session?.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } }),
       onError: (m) => this.fail(m),
+      onLevel: (peak, sending) => this.cb.onMicLevel?.(peak, sending),
     });
     this.player.setPitch(DEFAULT_PITCH);
   }
@@ -129,6 +135,27 @@ export class LiveConversation {
       await this.stop();
       await this.start(sys);
     }
+  }
+
+  /**
+   * Active/coupe le traitement téléphonie du micro (cf. MicCapture.setProcessing).
+   * Comme la voix, il est figé à l'ouverture du flux : on relance la conversation
+   * pour que le changement s'entende TOUT DE SUITE — sans ça, comparer les deux
+   * réglages demanderait d'arrêter et relancer à la main entre chaque essai, et
+   * personne ne compare vraiment dans ces conditions.
+   */
+  async setMicProcessing(on: boolean): Promise<void> {
+    this.mic.setProcessing(on);
+    if (this.session) {
+      const sys = this.systemInstruction;
+      await this.stop();
+      await this.start(sys);
+    }
+  }
+
+  /** Gain micro (1..8). Effet immédiat, sans relancer la session. */
+  setMicGain(g: number): void {
+    this.mic.setGain(g);
   }
 
   /** Hauteur de la voix (1 = naturelle, >1 = plus aiguë/bébé). Effet immédiat. */

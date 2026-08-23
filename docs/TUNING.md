@@ -4,6 +4,57 @@
 > Meilleur résultat à date : **22 s d'équilibre continu** (run 11), avec une
 > phase parfaitement posée de 8,5 s (pitch ±2°, roues quasi immobiles).
 
+## 🎯 23/08 (3) — les déplacements de l'app terminent sur l'odométrie
+
+`OP_FORWARD` / `OP_BACKWARD` / `OP_TURN` appellent désormais `startOdoMove()`, le
+chemin de `M`/`T`. Le chronomètre disparaît de la chaîne : ce n'est plus une durée
+calculée qui met fin au mouvement, c'est le compteur de pas qui atteint sa cible.
+C'était le dernier endroit où le robot supposait sa propre vitesse au lieu de la
+mesurer.
+
+**Ce que ça change, très concrètement : la vitesse.** Les déplacements scriptés
+roulaient à `P`/`R` (fond de course de la manette, 300 mm/s et 120 °/s) parce
+qu'une durée se calcule en divisant par une vitesse. Ils roulent maintenant à
+`ODO_MOVE_SPEED_MM_S` / `ODO_TURN_SPEED_DEG_S`, soit **150 mm/s et 60 °/s** — deux
+fois moins. Ce n'est pas un choix de confort : l'anticipation de freinage
+(`ODO_BRAKE_LEAD_S`, 0,17 s) a été **mesurée à ces vitesses-là**, et c'est elle qui
+place le point d'arrêt. Monter la vitesse est légitime, mais c'est une mesure à
+refaire, pas un curseur à pousser.
+
+La distinction à garder en tête : `P`/`R` restent les fonds de course de la
+**manette**, là où c'est un humain qui juge de la distance et lâche quand il veut —
+la vitesse y est affaire de goût. Sur un déplacement scripté elle entre dans le
+calcul, donc c'est un fait mesuré. Deux réglages voisins, deux natures.
+
+### Ce que ce n'est toujours pas
+
+Un asservissement de position. La commande retombe à zéro `v·τ` avant la cible et
+le robot s'arrête comme il peut. Sur un trajet court il n'atteint même pas sa
+vitesse de croisière (l'intégrale de la boucle vitesse a une constante de 5,7 s) :
+il freine donc depuis moins vite que prévu et s'arrête un peu **court**. De l'ordre
+du centimètre sur 30 cm, contre des dizaines de pour cent au chronomètre.
+
+Il n'y a toujours **ni profil de décélération, ni maintien de cap** : rien ne tient
+la ligne droite pendant le trajet.
+
+### Deux garde-fous ajoutés avec
+
+- **Firmware** : un déplacement demandé hors équilibre est refusé. Un robot couché
+  ne peut pas atteindre une cible d'odométrie — sans ce test la machine à états
+  attendrait un compteur immobile jusqu'à son délai de garde (≈ 8 s), puis
+  annoncerait un trajet qui n'a jamais eu lieu.
+- **App** : elle refuse le même déplacement *en le disant* (`⚠ forward: robot
+  désarmé — cliquer « ⚡ Armer »`). Le firmware protège, l'app explique : un ordre
+  avalé en silence ressemble trait pour trait à une panne.
+
+### Console
+
+Le bilan `[MOVE]` s'imprime toujours, préfixé `(app)` quand le déplacement ne vient
+pas de `M`/`T`. En revanche la **proposition de correction de `config.h`** n'est
+imprimée que pour un vrai `M`/`T` : calculée sur les 30 cm d'un déplacement de
+l'app elle serait mauvaise, et une ligne `WHEEL_DIAMETER_MM = …` affichée à l'écran
+ne dit pas d'elle-même qu'il ne faut pas s'en servir.
+
 ## 📐 23/08 (2) — odométrie : de quoi commander « avance de 50 cm »
 
 Prérequis à des trajectoires programmées. `OP_FORWARD`/`OP_TURN` existaient déjà,
@@ -235,6 +286,10 @@ ordre : les quatre cas de signe sont justes et l'anticipation tombe à moins d'u
 millimètre — mais c'est un bonus, pas une exigence.
 
 ### Reste à faire
+
+> Fait depuis, en partie : le routage sur l'odométrie a été livré le 23/08 (3),
+> voir la section en tête de fichier. Le profil de décélération et le maintien de
+> cap décrits ci-dessous, eux, restent entiers.
 
 Fermer vraiment la boucle : `OP_FORWARD`/`OP_TURN` (encore au chronomètre)
 terminent sur l'odométrie, avec un profil de décélération au lieu d'un simple

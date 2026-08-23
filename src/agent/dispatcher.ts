@@ -17,6 +17,12 @@ export interface DispatchResult {
 }
 
 /**
+ * Les intentions qui font ROULER le robot. Même liste que la famille DÉPLACEMENT
+ * décrite à Gemini dans intents.ts — si l'une des deux bouge, l'autre aussi.
+ */
+const MOVING_INTENTS = new Set(['forward', 'backward', 'turn', 'circle', 'nod', 'bow', 'wiggle']);
+
+/**
  * Route un IntentCall vers le visage, le son et/ou le transport.
  * C'est le point unique de traduction « intention → effet ».
  */
@@ -29,10 +35,27 @@ export class Dispatcher {
     private readonly emotes?: EmoteLayer,
     /** Pilote des trajectoires continues (ronds). Absent = pas de courbes. */
     private readonly drive?: DriveLoop,
+    /**
+     * Le robot peut-il se déplacer, là, maintenant ? Rend la RAISON du refus, ou
+     * null si c'est bon.
+     *
+     * Le firmware refuse déjà tout déplacement hors équilibre, et il le fait en
+     * silence — c'est son rôle. Ce que personne ne fait sans ce garde-fou, c'est
+     * le DIRE : « avance » émet alors un ordre parfaitement légitime, le robot ne
+     * bouge pas, et rien nulle part ne distingue ça d'une panne.
+     */
+    private readonly moveGate?: () => string | null,
   ) {}
 
   dispatch(call: IntentCall): DispatchResult {
     const a = call.args;
+    // Un seul contrôle pour toute la famille DÉPLACEMENT (cf. intents.ts) : c'est
+    // exactement l'ensemble des intentions qui font tourner les roues, gestes
+    // compris — un `bow` sur un robot couché ne se voit pas davantage.
+    if (MOVING_INTENTS.has(call.name)) {
+      const refus = this.moveGate?.();
+      if (refus) return { name: call.name, ok: false, detail: refus };
+    }
     switch (call.name) {
       case 'express': {
         const emotion = String(a.emotion ?? 'neutral') as Emotion;

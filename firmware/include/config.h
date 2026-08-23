@@ -494,7 +494,9 @@ constexpr float TELEOP_MAX_TURN_DEG_S = 120.0f; // fond de course rotation
 // tombe (à 300 mm/s : 15 cm).
 constexpr uint32_t TELEOP_TTL_MS = 500;
 
-// ─── DÉPLACEMENT MESURÉ (calibration odométrique, console `M` / `T`) ───────
+// ─── DÉPLACEMENT MESURÉ ───────────────────────────────────────────────────
+// Deux usages, un seul chemin : la calibration odométrique (console `M`/`T`) et
+// les déplacements scriptés de l'app (OP_FORWARD/BACKWARD/TURN, depuis le 23/08).
 // Le robot parcourt une consigne D'ODOMÉTRIE puis s'arrête tout seul ; l'humain
 // mesure le réel au mètre ruban. Le rapport des deux EST la correction.
 // ⚠️ CE QUI REND CE PROTOCOLE SIMPLE : la précision de l'arrêt n'intervient PAS.
@@ -506,6 +508,14 @@ constexpr uint32_t TELEOP_TTL_MS = 500;
 // (τ ≈ 0,35 s) traîne davantage, le dépassement grandit et les corrections
 // d'équilibre brassent plus de pas parasites dans le compteur. On ne cherche pas
 // la performance ici, on cherche un nombre propre.
+//
+// ⚠️ DEPUIS QUE LES DÉPLACEMENTS DE L'APP PASSENT PAR ICI, ces deux constantes ne
+// gouvernent plus seulement une mesure de banc : ce sont les allures auxquelles
+// Mochi exécute « avance de 30 cm ». Le robot est donc plus lent qu'à l'époque du
+// chronomètre (qui roulait à `P`/`R`), et c'est le prix assumé de l'exactitude :
+// l'anticipation de freinage ci-dessous a été mesurée À CES VITESSES-LÀ. Les
+// monter est légitime, mais ce n'est pas un réglage de goût — c'est une mesure à
+// refaire (`M 2000`, relever le dépassement, corriger ODO_BRAKE_LEAD_S).
 constexpr float ODO_MOVE_SPEED_MM_S = 150.0f;  // croisière en ligne droite
 constexpr float ODO_TURN_SPEED_DEG_S = 60.0f;  // croisière en pivot
 // Anticipation du freinage : la commande retombe à zéro ce temps-là AVANT la

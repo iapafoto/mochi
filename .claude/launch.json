@@ -9,6 +9,14 @@
       "autoPort": false
     },
     {
+      "name": "mochi-https",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:https"],
+      "port": 5174,
+      "url": "https://localhost:5174",
+      "autoPort": false
+    },
+    {
       "name": "mochi-check",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],

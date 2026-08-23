@@ -60,10 +60,20 @@ void Tuning::begin(Balance* balance, Console& io) {
       balance_->setKpSpeed(prefs.getFloat("kpSpeed", balance_->kpSpeed()));
       balance_->setKiSpeed(prefs.getFloat("kiSpeed", balance_->kiSpeed()));
       balance_->setOffsetDeg(prefs.getFloat("offset", balance_->offsetDeg()));
-      balance_->setPitchAxis(prefs.getUChar("axis", 0), (int8_t)prefs.getChar("sign", 1));
+      // ⚠️ LE REPLI EST LA VALEUR DÉJÀ EN PLACE, jamais un littéral. Ces trois-là
+      // faisaient exception et `axis` retombait sur 0 — c'est-à-dire l'axe X, alors
+      // que le montage est en Y (DEFAULT_PITCH_AXIS). Une clé `axis` absente d'une
+      // NVS qui contient par ailleurs les gains suffisait donc à faire lire le
+      // tangage sur le mauvais axe : le robot croit être couché quand il est droit,
+      // la porte de réengagement ne s'ouvre jamais et les moteurs restent coupés
+      // sans qu'aucun message ne parle d'axe. 90° d'erreur, pile la différence
+      // entre X et Y. À ce stade `applyDefaultTuning()` a déjà posé config.h : ne
+      // rien trouver en NVS doit laisser CE choix-là intact.
+      balance_->setPitchAxis(prefs.getUChar("axis", balance_->pitchAxis()),
+                             (int8_t)prefs.getChar("sign", balance_->pitchSign()));
       balance_->setInvertLeft(prefs.getBool("invL", balance_->invertLeft()));
       balance_->setInvertRight(prefs.getBool("invR", balance_->invertRight()));
-      balance_->setRateSign((int8_t)prefs.getChar("rateS", 1));
+      balance_->setRateSign((int8_t)prefs.getChar("rateS", balance_->rateSign()));
       balance_->setYawSign((int8_t)prefs.getChar("yawS", balance_->yawSign()));
       balance_->setMaxAccel(prefs.getFloat("accel", balance_->maxAccel()));
       balance_->setFilterCoef(prefs.getFloat("fcoef", balance_->filterCoef()));
@@ -142,23 +152,32 @@ void Tuning::poll() {
                 (unsigned long)(drv.atMs / 1000));
   }
 
-  // --- Bilan d'un déplacement MESURÉ (console `M` / `T`) ---
+  // --- Bilan d'un déplacement MESURÉ (console `M`/`T`, ou l'app) ---
   // Latché par le cœur 1 après stabilisation, imprimé ici : la boucle temps réel
   // ne fait pas de printf, et surtout la mesure n'a de sens qu'une fois le robot
   // revenu debout et immobile (cf. Balance.h).
   Balance::MoveInfo mv;
   if (balance_->takeMoveEvent(mv)) {
     const bool straight = mv.askedMm != 0.0f;
-    io_->printf("[MOVE] %s : demande %+.0f %s -> ODOMETRIE %+.1f %s%s\n",
+    io_->printf("[MOVE]%s %s : demande %+.0f %s -> ODOMETRIE %+.1f %s%s\n",
+                mv.calib ? "" : " (app)",
                 straight ? "avance" : "rotation",
                 straight ? mv.askedMm : mv.askedDeg, straight ? "mm" : "deg",
                 straight ? mv.gotMm : mv.gotWheelDeg, straight ? "mm" : "deg",
                 mv.reason == Balance::MOVE_TIMEOUT
                     ? "  ⚠ ARRET SUR DELAI (roue bloquee ? patinage ? robot souleve ?)"
                     : "");
-    io_->println("       >>> MESURER le reel, puis reporter dans config.h :");
-    printOdoCalib(mv.gotMm, mv.gotWheelDeg, mv.gotGyroDeg,
-                  straight ? CALIB_STRAIGHT : CALIB_TURN);
+    // La proposition de correction n'est imprimée que pour un `M`/`T`. Un « avance
+    // de 30 cm » de l'app donnerait un chiffre techniquement calculé mais mauvais
+    // à calibrer dessus (trop court, et personne n'a le ruban en main) — or une
+    // ligne « WHEEL_DIAMETER_MM = ... » imprimée à l'écran ne dit pas d'elle-même
+    // qu'il ne faut pas s'en servir. Le bilan brut, lui, reste : c'est la trace
+    // qui dit ce que le robot a cru parcourir.
+    if (mv.calib) {
+      io_->println("       >>> MESURER le reel, puis reporter dans config.h :");
+      printOdoCalib(mv.gotMm, mv.gotWheelDeg, mv.gotGyroDeg,
+                    straight ? CALIB_STRAIGHT : CALIB_TURN);
+    }
   }
 
   // --- Sortie : stream périodique pitch / consigne / vitesse ---
@@ -319,7 +338,7 @@ void Tuning::handleLine(char* line) {
         io_->println("[tune] le robot doit etre EN EQUILIBRE : le poser droit, attendre `BAL`");
         break;
       }
-      balance_->startOdoMove(cmd == 'M' ? v : 0.0f, cmd == 'M' ? 0.0f : v);
+      balance_->startOdoMove(cmd == 'M' ? v : 0.0f, cmd == 'M' ? 0.0f : v, true);
       io_->printf("[tune] %s %+.0f %s — il s'arretera TOUT SEUL, puis annoncera son odometrie.\n"
                   "       Ne pas le rattraper : le pad, `u` ou `%c 0` annulent. Faire `x` AVANT\n"
                   "       pour que drv_muet/contresens ne decrivent que CE trajet.\n",

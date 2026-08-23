@@ -34,7 +34,7 @@ const mood = new MoodEngine();
 const driveLoop = new DriveLoop(transport, (completed) =>
   panel.logLine(completed ? '○ rond terminé' : '○ rond interrompu'),
 );
-const dispatcher = new Dispatcher(face, sound, transport, mood, emotes, driveLoop);
+const dispatcher = new Dispatcher(face, sound, transport, mood, emotes, driveLoop, moveGate);
 
 const renderer = new FaceRenderer(canvas, face);
 renderer.start();
@@ -50,6 +50,20 @@ let lastTelemetry: Telemetry | null = null;
 
 /** Doit rester aligné sur ZERO_CAPTURE_MAX_DEG (firmware/include/config.h). */
 const ZERO_CAPTURE_MAX_DEG = 45;
+
+/**
+ * Inclinaison max tolérée pour lancer une calibration IMU.
+ *
+ * Plus SERRÉ que la capture de zéro, et ce n'est pas une inconséquence : un zéro
+ * faux se rattrape d'un `z`, une référence accéléro fausse contamine tout ce qui
+ * lit un angle. Le prix d'un refus abusif est de tenir le robot un peu plus droit.
+ *
+ * ⚠️ Ce test n'a de sens que si la référence est ENCORE bonne — il lit `pitchDeg`,
+ * qui en dépend. Quand elle est déjà cassée, il refusera la calibration qui la
+ * réparerait : c'est la console `c` qui sert alors de sortie de secours, sans
+ * garde-fou, pour l'humain qui sait ce qu'il fait.
+ */
+const CALIB_MAX_TILT_DEG = 20;
 
 // Conversation vocale Live (créée plus bas si une clé Gemini est présente).
 // Référencée en différé par les handlers du panneau, comme `agent`.
@@ -112,7 +126,10 @@ function startMoodLoop(): void {
 const panel = new DevPanel(panelRoot, {
   onIntent: (call) => {
     void sound.unlock();
-    dispatcher.dispatch(call);
+    // Les boutons de banc méritent le même retour que l'IA : c'est ICI qu'on
+    // essaie un déplacement en premier, donc ici qu'un refus muet coûte le plus.
+    const res = dispatcher.dispatch(call);
+    if (!res.ok) panel.logLine(`⚠ ${res.name}: ${res.detail}`);
   },
   onSend: (text) => {
     void sound.unlock();
@@ -160,12 +177,37 @@ const panel = new DevPanel(panelRoot, {
   },
   onZeroOnArmChange: (on) =>
     panel.logLine(on ? '⌖ le zéro sera capturé à chaque armement' : '⌖ capture à l’armement désactivée'),
+  onMicProcessingChange: (on) => {
+    panel.logLine(
+      on
+        ? '🎙 micro : anti-écho + réduction de bruit ACTIFS (réglage téléphone-contre-la-bouche)'
+        : '🎙 micro : capture BRUTE — à essayer téléphone posé à distance',
+    );
+    void live?.setMicProcessing(on);
+  },
+  onMicGainChange: (g) => live?.setMicGain(g),
   onCalibrate: () => {
     // GARDE-FOU que la console n'a pas : la calibration coupe les moteurs et repasse
     // en IDLE pendant ~2 s. Lancée sur un robot DEBOUT, elle le fait tomber — et on
     // ne s'en rend compte qu'au bruit. Elle se fait robot en main, tenu vertical.
     if (lastTelemetry?.state === RobotState.BALANCING) {
       panel.logLine('⚠ calibration refusée : il est en équilibre. Le prendre en main d’abord.');
+      return;
+    }
+    // ⚠️ LE GARDE-FOU QUI MANQUAIT, ET QUI A COÛTÉ UNE SÉANCE (23/08).
+    // `calcOffsets(gyro, accel)` grave la pose du moment comme référence « az = 1 g ».
+    // Lancée robot COUCHÉ SUR LA TABLE — la position la plus naturelle du monde pour
+    // cliquer un bouton — elle grave « couché = 0° » : le robot lit alors ~90° debout,
+    // ne se voit plus jamais vertical, et les moteurs ne s'engagent plus. Aucun message
+    // ne parle d'IMU, on cherche ailleurs pendant une heure.
+    // Le test précédent ne protégeait QUE le cas inverse (robot debout qu'on fait
+    // tomber) : il laissait passer celui qui casse la référence.
+    const tilt = lastTelemetry?.pitchDeg;
+    if (tilt !== undefined && Math.abs(tilt) > CALIB_MAX_TILT_DEG) {
+      panel.logLine(
+        `⚠ calibration refusée : ${tilt.toFixed(0)}° de la verticale. La tenir DROIT en main — ` +
+          'cette pose devient la référence de TOUT le reste.',
+      );
       return;
     }
     transport.sendIntent(Op.CALIBRATE);
@@ -268,6 +310,15 @@ if (liveAccess) {
     onMochiText: (t) => panel.logLine(`💬 Mochi : ${t}`),
     onSpeakingChange: (speaking) => (speaking ? startMouthFlap() : stopMouthFlap()),
     onLevel: (lvl) => (voiceLevel = lvl),
+    // Le seul moyen de savoir, DEPUIS LE TÉLÉPHONE, pourquoi Mochi parle bas :
+    // sur Android le repli sort au volume d'APPEL, et il ne se signale nulle part.
+    onRoute: (viaElement, detail) =>
+      panel.logLine(
+        viaElement
+          ? `🔊 ${detail}`
+          : `⚠ 🔈 ${detail} — sur Android c'est le volume d'APPEL, donc faible`,
+      ),
+    onMicLevel: (peak, sending) => panel.setMicLevel(peak, sending),
     dispatch: (call) => {
       const res = dispatcher.dispatch(call);
       if (!res.ok) panel.logLine(`⚠ ${res.name}: ${res.detail}`);
@@ -275,6 +326,12 @@ if (liveAccess) {
   });
 }
 panel.setLiveSupported(!!live);
+// La case est restaurée du localStorage à la construction du panneau ; le micro,
+// lui, démarre sur son défaut. Sans cette ligne, un réglage décoché réapparaît
+// coché au rechargement côté capture uniquement — l'écran dit une chose, le micro
+// en fait une autre, et on cherche pourquoi le réglage « ne marche pas ».
+void live?.setMicProcessing(panel.micProcessing);
+live?.setMicGain(panel.micGain);
 
 // Éditeur de personnalité (seulement si l'agent gère un system prompt = Gemini).
 panel.configurePersona(!!agent.setPersona, agent.getPersona?.() ?? DEFAULT_PERSONA, DEFAULT_PERSONA);
@@ -310,6 +367,35 @@ window.addEventListener('pointerdown', () => void sound.unlock(), { once: true }
 startMoodLoop();
 
 console.info('[Mochi] prêt.', agent.info);
+
+/**
+ * Un déplacement est-il possible en ce moment ? Rend la raison du refus, sinon
+ * null. Déclarée en `function` (donc hoistée) pour pouvoir être passée au
+ * Dispatcher tout en haut du fichier, comme `captureZero` plus bas.
+ *
+ * ⚠️ Ce n'est PAS une redite du firmware, qui refuse déjà tout déplacement hors
+ * équilibre : lui protège, elle explique. Et l'explication est ce qui manque le
+ * plus ici — depuis le 23/08 un « avance de 30 cm » se termine sur l'ODOMÉTRIE,
+ * donc un robot couché n'a aucun moyen d'atteindre sa cible : l'ordre serait
+ * simplement avalé.
+ */
+function moveGate(): string | null {
+  // ⚠️ ON NE REFUSE QUE CE QU'ON SAIT REFUSÉ. Sans robot au bout (ou avant la
+  // première télémétrie), l'intention PASSE : le transport la journalise alors
+  // avec « (non émis) » et sa trame hexa — la trace qui permet de vérifier le
+  // protocole sans matériel, et de trancher « l'app n'a rien envoyé » / « l'app a
+  // envoyé, le robot n'a rien fait ». La remplacer par un refus ferait perdre
+  // l'octet, c'est-à-dire précisément ce que le journal a été fait pour montrer.
+  if (!transport.connected || !lastTelemetry) return null;
+  if (!lastTelemetry.armed) return 'robot désarmé — cliquer « ⚡ Armer »';
+  if (lastTelemetry.state === RobotState.FALLEN) {
+    return 'il est tombé — le relever droit et attendre « ⚖ en équilibre »';
+  }
+  if (lastTelemetry.state !== RobotState.BALANCING) {
+    return "il n'est pas en équilibre — le poser droit et attendre « ⚖ »";
+  }
+  return null;
+}
 
 /**
  * Capture « la pose actuelle = 0° », avec la même garde que le firmware.

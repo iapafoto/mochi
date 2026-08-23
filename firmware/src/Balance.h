@@ -208,10 +208,18 @@ class Balance {
   // Exécutée par le cœur 1 : les trois compteurs doivent repartir du MÊME instant,
   // sinon la comparaison roues/gyro démarre déjà faussée.
   void resetOdometry() { odoResetRequest_ = true; }
-  // ─── DÉPLACEMENT MESURÉ (calibration, console `M` / `T`) ────────────────
+  // ─── DÉPLACEMENT MESURÉ ─────────────────────────────────────────────────
+  // Console `M`/`T` (calibration) ET `OP_FORWARD`/`OP_BACKWARD`/`OP_TURN` (l'app).
   // « Avance de 2 m puis arrête-toi », au lieu de piloter à la main et d'essayer
   // de lâcher au bon endroit. L'un des deux arguments doit être nul : soit une
   // ligne droite, soit un pivot.
+  //
+  // Les déplacements scriptés sont passés par ici le 23/08 : ils terminaient au
+  // CHRONOMÈTRE (durée = distance / vitesse), ce qui suppose que le robot atteint
+  // sa consigne de vitesse tout de suite. Faux sur un pendule inversé — la boucle
+  // externe est lente exprès et son intégrale a une constante de 5,7 s, jamais
+  // atteinte sur un déplacement de deux secondes. Le chrono ne pouvait donc pas
+  // être juste, et il ne disait même pas de combien il était faux.
   //
   // ⚠️ CE N'EST PAS UN ASSERVISSEMENT DE POSITION, et il ne faut pas le prendre
   // pour tel. La commande retombe à zéro quand l'odométrie atteint la cible, puis
@@ -223,8 +231,16 @@ class Balance {
   // quatrième couche en cascade, et devra être plus douce que la boucle vitesse.)
   //
   // Toute intervention humaine ANNULE le déplacement : `stopMotion`, le pad, une
-  // commande `u`, une chute. Cf. startTimedMotion / resetControl.
-  void startOdoMove(float mm, float deg);
+  // commande `u`, un OP_DRIVE de l'app, une chute. Cf. startTimedMotion /
+  // resetControl. C'est ce qui permet de reprendre la main sur un robot parti
+  // pour 2 m sans avoir à courir après.
+  //
+  // `calib` ne change RIEN au déplacement lui-même : il MARQUE le résultat, pour
+  // que la console ne propose une correction de config.h que sur une mesure faite
+  // exprès pour ça (cf. Tuning.cpp). Un « avance de 30 cm » de l'app produirait
+  // sinon une proposition de calibration techniquement calculée mais mauvaise —
+  // et une fois imprimée, rien ne dit qu'il ne faut pas s'en servir.
+  void startOdoMove(float mm, float deg, bool calib = false);
   bool odoMoveActive() const { return odoPhase_ != 0; }
   enum MoveEnd : uint8_t {
     MOVE_REACHED = 0, // cible d'odométrie atteinte
@@ -234,6 +250,7 @@ class Balance {
     float askedMm, askedDeg;              // ce qui a été demandé
     float gotMm, gotWheelDeg, gotGyroDeg; // ce que l'odométrie a compté
     uint8_t reason;                       // MoveEnd
+    bool calib;                           // demandé par `M`/`T` (et pas par l'app)
   };
   // Consomme le résultat en attente (cœur 0). false s'il n'y en a pas.
   bool takeMoveEvent(MoveInfo& out) {
@@ -480,6 +497,7 @@ class Balance {
   volatile uint32_t odoDeadlineMs_ = 0;
   uint32_t odoSettleAtMs_ = 0;
   uint8_t odoEndReason_ = 0;
+  volatile bool odoCalib_ = false; // origine de la demande (console `M`/`T` ou app)
   MoveInfo move_{};
   volatile bool movePending_ = false;
   volatile float offsetDeg_ = 0.0f;

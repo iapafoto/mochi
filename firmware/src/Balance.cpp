@@ -839,30 +839,42 @@ void Balance::onCommand(uint8_t op, const uint8_t* payload, size_t len) {
       driveNormalized(v, w, ttl);
       break;
     }
-    // Déplacements SCRIPTÉS : ils roulent à la même vitesse que « manette à fond »
-    // (`P`/`R`). Une seule vitesse pour un seul robot — il y avait avant une
-    // « vitesse de croisière » distincte, qui divergeait de celle du téléguidage dès
-    // le premier réglage. La garde `<= 0` n'est pas décorative : la durée se calcule
-    // en divisant PAR la vitesse.
+    // Déplacements SCRIPTÉS : ils terminent sur l'ODOMÉTRIE, exactement comme
+    // `M`/`T`. Le chronomètre qu'ils utilisaient avant (durée = distance / vitesse)
+    // ne pouvait pas être juste — cf. l'en-tête de startOdoMove dans Balance.h.
+    //
+    // ⚠️ ILS NE ROULENT PLUS À `P`/`R` mais à ODO_MOVE_SPEED_MM_S /
+    // ODO_TURN_SPEED_DEG_S, la SEULE allure à laquelle l'anticipation de freinage
+    // ait été mesurée au banc. `P`/`R` restent les fonds de course de la MANETTE :
+    // là c'est un humain qui juge de la distance et qui lâche quand il veut, donc
+    // la vitesse est une affaire de goût. Ici elle entre dans le calcul du point
+    // de lâcher, donc c'est un fait mesuré. Deux réglages, deux natures.
+    //
+    // Refusés hors équilibre : un robot couché ou au repos ne PEUT pas parcourir
+    // une distance. Sans ce garde-fou la machine à états resterait à attendre une
+    // odométrie immobile jusqu'à son délai de garde, puis annoncerait un trajet
+    // qui n'a jamais eu lieu. L'app voit l'état dans la télémétrie.
     case OP_FORWARD:
     case OP_BACKWARD: {
-      const float v = teleopMaxSpeedMmS_;
-      if (v <= 0.0f) break;
+      if (state_ != STATE_BALANCING) break;
       const float mm = fabsf((float)i16()) * 10.0f;
-      startTimedMotion(op == OP_FORWARD ? +v : -v, 0.0f,
-                       (uint32_t)(mm / v * 1000.0f));
+      if (mm == 0.0f) break; // « avance de 0 » : rien à faire, et pas de cible nulle
+      startOdoMove(op == OP_FORWARD ? +mm : -mm, 0.0f);
       break;
     }
     case OP_TURN: {
-      const float w = teleopMaxTurnDegS_;
-      if (w <= 0.0f) break;
-      const float deg = i16();
-      startTimedMotion(0.0f, deg >= 0 ? +w : -w,
-                       (uint32_t)(fabsf(deg) / w * 1000.0f));
+      if (state_ != STATE_BALANCING) break;
+      const float deg = (float)i16();
+      if (deg == 0.0f) break;
+      startOdoMove(0.0f, deg);
       break;
     }
     case OP_LOOK: {
       // Petit coup d'œil = brève rotation sur place (gauche/droite seulement).
+      // RESTE au chronomètre, et c'est volontaire : ce n'est pas un déplacement
+      // vers une cible mais une pichenette de 250 ms. Il n'y a aucune distance
+      // sur laquelle refermer une boucle, et la stabilisation de 1,5 s du chemin
+      // odométrique transformerait un coup d'œil en manœuvre.
       uint8_t dir = len >= 1 ? payload[0] : LOOK_CENTER;
       if (dir == LOOK_LEFT) startTimedMotion(0.0f, -teleopMaxTurnDegS_, 250);
       else if (dir == LOOK_RIGHT) startTimedMotion(0.0f, +teleopMaxTurnDegS_, 250);
@@ -919,7 +931,7 @@ void Balance::startTimedMotion(float speedMmS, float steerDegS, uint32_t duratio
 // Départ d'un déplacement MESURÉ (cœur 0). On ne fait que POSER la demande : la
 // remise à zéro de l'odométrie est faite par le cœur 1 au premier tick, pour que
 // le compteur parte exactement du même instant que le mouvement.
-void Balance::startOdoMove(float mm, float deg) {
+void Balance::startOdoMove(float mm, float deg, bool calib) {
   const uint32_t budget =
       (uint32_t)(ODO_MOVE_TIMEOUT_FACTOR * 1000.0f *
                  (mm != 0.0f ? fabsf(mm) / ODO_MOVE_SPEED_MM_S
@@ -928,6 +940,7 @@ void Balance::startOdoMove(float mm, float deg) {
   taskENTER_CRITICAL(&mux_);
   odoGoalMm_ = mm;
   odoGoalDeg_ = deg;
+  odoCalib_ = calib;
   odoDeadlineMs_ = millis() + budget;
   odoPhase_ = 1;
   taskEXIT_CRITICAL(&mux_);
@@ -997,6 +1010,7 @@ void Balance::odoMoveTick(uint32_t nowMs) {
   move_.gotWheelDeg = odoYawWheelDeg();
   move_.gotGyroDeg = odoYawGyroDeg();
   move_.reason = odoEndReason_;
+  move_.calib = odoCalib_;
   movePending_ = true;
   taskENTER_CRITICAL(&mux_);
   odoPhase_ = 0;
