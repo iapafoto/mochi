@@ -45,8 +45,10 @@ cp .env.local.example .env.local
 Sans clé, l'app utilise l'agent local (mots-clés FR : « fais un clin d'œil », « avance de 20 cm »,
 « tu as l'air content », « regarde à droite »…). Avec clé, la même chaîne passe par Gemini.
 
-> ⚠️ La clé est exposée côté client — OK pour du dev perso local uniquement. Prévoir un proxy avant
-> tout déploiement (TODO signalé dans `agent/gemini.ts`).
+`.env.local` reste le confort du PC de dev. **Sur le téléphone, la clé se colle dans le panneau
+debug** (section « Clé Gemini ») : elle vit alors dans le `localStorage` de l'appareil, jamais dans
+le bundle. C'est ce qui permet de servir l'app depuis n'importe quel hébergement statique — voir
+`src/agent/apiKey.ts` pour le raisonnement complet.
 
 ## Structure
 

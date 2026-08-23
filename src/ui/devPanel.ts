@@ -38,6 +38,8 @@ export interface DevPanelHandlers {
   onVoiceChange(name: string): void;
   /** Change la hauteur de la voix (1 = naturelle, >1 = plus aiguë/bébé). */
   onPitchChange(factor: number): void;
+  /** Enregistre (ou efface, si vide) la clé Gemini de cet appareil. */
+  onGeminiKeyChange(key: string): void;
 }
 
 /** Préférence mémorisée : capturer le zéro à chaque armement. */
@@ -45,6 +47,17 @@ const ZERO_ON_ARM_KEY = 'mochi.zeroOnArm';
 
 /** Préférence mémorisée : traitement téléphonie du micro (défaut = actif). */
 const MIC_PROCESSING_KEY = 'mochi.micProcessing';
+
+/**
+ * Préférence mémorisée : ouvrir la conversation dès le lancement (défaut = OUI,
+ * d'où le test sur `!== '0'` — l'absence de clé vaut « coché »).
+ *
+ * Décocher n'est pas un caprice de réglage : la conversation Live ouvre le micro
+ * ET une session facturée à CHAQUE chargement de page, rechargements de mise au
+ * point compris. Au banc, où l'on recharge vingt fois par heure pour un réglage
+ * moteur, c'est l'interrupteur qui rend l'app silencieuse et gratuite.
+ */
+const AUTO_START_KEY = 'mochi.autoStart';
 
 /** Préférence mémorisée : gain logiciel du micro (défaut = 1×, donc sans effet). */
 const MIC_GAIN_KEY = 'mochi.micGain';
@@ -114,6 +127,7 @@ export class DevPanel {
   private zeroBtns: HTMLButtonElement[] = [];
   private zeroOnArmBox!: HTMLInputElement;
   private micProcessingBox!: HTMLInputElement;
+  private autoStartBox!: HTMLInputElement;
   private micLevelEl!: HTMLSpanElement;
   /** Gain micro restauré du localStorage — lu par main.ts au démarrage. */
   micGain = 1;
@@ -123,6 +137,10 @@ export class DevPanel {
   private fsBtn!: HTMLButtonElement;
   private telemetryEl!: HTMLSpanElement;
   private armed = false;
+  private keyInput!: HTMLInputElement;
+  private keyStatusEl!: HTMLSpanElement;
+  private keyForgetBtn!: HTMLButtonElement;
+  private buildEl!: HTMLElement;
 
   constructor(
     private readonly root: HTMLElement,
@@ -271,13 +289,57 @@ export class DevPanel {
     gainRow.append(gainLabel, gain);
     this.micGain = gain0;
 
+    // Démarrage automatique au lancement (coché par défaut). Le changement ne
+    // prend effet qu'au prochain chargement : décocher ne coupe pas la session en
+    // cours — le bouton juste au-dessus est là pour ça.
+    const autoLabel = document.createElement('label');
+    autoLabel.className = 'dp-check';
+    const autoBox = document.createElement('input');
+    autoBox.type = 'checkbox';
+    autoBox.checked = localStorage.getItem(AUTO_START_KEY) !== '0';
+    autoBox.addEventListener('change', () =>
+      localStorage.setItem(AUTO_START_KEY, autoBox.checked ? '1' : '0'),
+    );
+    autoLabel.append(autoBox, document.createTextNode(' démarrer au lancement'));
+    this.autoStartBox = autoBox;
+
     this.liveStatusEl = document.createElement('span');
     this.liveStatusEl.className = 'dp-status';
     liveSection.append(
       this.liveBtn, this.liveStopBtn, voiceRow, pitchRow,
-      procLabel, gainRow, this.micLevelEl, this.liveStatusEl,
+      procLabel, gainRow, autoLabel, this.micLevelEl, this.liveStatusEl,
     );
     this.root.append(liveSection);
+
+    // Clé Gemini. Elle commande DEUX choses — la conversation Live et l'agent
+    // texte — d'où sa propre section plutôt qu'un coin de celle du Live. Saisie
+    // une fois, elle reste sur cet appareil (cf. agent/apiKey.ts) : c'est ce qui
+    // permet de servir l'app depuis n'importe quel hébergement statique, sans
+    // rien de secret dans le bundle.
+    const keySection = section('Clé Gemini');
+    const keyRow = el('div', 'dp-row');
+    this.keyInput = document.createElement('input');
+    // `password` : le panneau reste ouvert pendant les démos, et la clé se lit
+    // par-dessus l'épaule aussi bien qu'un mot de passe.
+    this.keyInput.type = 'password';
+    this.keyInput.placeholder = 'coller la clé AI Studio…';
+    this.keyInput.autocomplete = 'off';
+    this.keyInput.spellcheck = false;
+    const keySave = button('Enregistrer', () => {
+      const v = this.keyInput.value.trim();
+      if (v) this.h.onGeminiKeyChange(v);
+    });
+    this.keyInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') keySave.click();
+    });
+    keyRow.append(this.keyInput, keySave);
+    this.keyForgetBtn = button('Oublier la clé de cet appareil', () =>
+      this.h.onGeminiKeyChange(''),
+    );
+    this.keyStatusEl = document.createElement('span');
+    this.keyStatusEl.className = 'dp-status';
+    keySection.append(keyRow, this.keyForgetBtn, this.keyStatusEl);
+    this.root.append(keySection);
 
     // Personnalité (caractère éditable) — masquée tant que l'agent ne la gère pas.
     this.personaSection = section('Personnalité (IA)');
@@ -382,6 +444,32 @@ export class DevPanel {
     this.logEl.id = 'dp-log';
     logSection.append(this.logEl);
     this.root.append(logSection);
+
+    // Tampon de build, EN DEHORS du log — parce que dans le log il défilerait,
+    // et qu'on le cherche justement au moment où l'on doute que le nouveau code
+    // soit arrivé (cf. la politique de mise à jour dans src/pwa.ts).
+    this.buildEl = el('p', 'dp-build');
+    this.root.append(this.buildEl);
+  }
+
+  /** Affiche la version qui tourne réellement. */
+  setBuildId(id: string): void {
+    this.buildEl.textContent = `build ${id}`;
+  }
+
+  /**
+   * Reflète l'état de la clé. `stored` = saisie sur CET appareil ; `source` = d'où
+   * vient celle qui sert vraiment — les deux diffèrent en dev, où `.env.local`
+   * fait marcher Gemini alors que rien n'est stocké.
+   */
+  configureGeminiKey(stored: boolean, source: string): void {
+    this.keyForgetBtn.style.display = stored ? '' : 'none';
+    this.keyInput.placeholder = stored ? 'remplacer la clé…' : 'coller la clé AI Studio…';
+    this.keyStatusEl.textContent = stored
+      ? `✓ clé enregistrée sur cet appareil (active : ${source})`
+      : source === 'aucune'
+        ? '⚠ aucune clé — agent local (mots-clés), pas de voix Live'
+        : `clé active : ${source} — rien n'est stocké sur cet appareil`;
   }
 
   private grid(title: string, btns: [string, IntentCall][]): HTMLElement {
@@ -490,6 +578,11 @@ export class DevPanel {
     return this.micProcessingBox.checked;
   }
 
+  /** Tout démarrer au lancement (robot + conversation) ? (case mémorisée) */
+  get autoStart(): boolean {
+    return this.autoStartBox.checked;
+  }
+
   /**
    * Jauge micro. `sending = false` est affiché DIFFÉREMMENT et pas masqué : voir
    * « ça capte fort, et c'est jeté » est l'information la plus utile du lot —
@@ -535,7 +628,7 @@ export class DevPanel {
     if (supported) return;
     this.liveBtn.disabled = true;
     this.liveBtn.textContent = '🎙 Live indisponible (pas de clé)';
-    this.liveBtn.title = 'Renseigne VITE_GEMINI_API_KEY dans .env.local';
+    this.liveBtn.title = 'Colle ta clé dans la section « Clé Gemini » ci-dessous';
   }
 
   /** Reflète l'état actif/inactif de la conversation Live. */

@@ -42,6 +42,46 @@ body {
   z-index: 5;
 }
 
+/* Invite « touche l'écran » (démarrage automatique impossible sans geste).
+   Sous le panneau, et TRANSPARENTE AUX CLICS : le geste qui la fait disparaître
+   doit pouvoir tomber n'importe où, y compris sur un bouton du panneau. */
+#wake {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: max(24px, env(safe-area-inset-bottom));
+  margin: 0;
+  padding: 0 16px;
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-dim);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+  animation: wake-pulse 2.4s ease-in-out infinite;
+  z-index: 8;
+}
+
+#wake[hidden] {
+  display: none;
+}
+
+@keyframes wake-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #wake {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
 #dev-panel {
   position: fixed;
   top: 0;
@@ -197,6 +237,17 @@ body {
 
 #dp-log .time {
   color: var(--text-dim);
+}
+
+/* Tampon de build : discret, mais toujours là — il répond d'un coup d'œil à
+   « est-ce que la mise à jour est bien passée ? ». */
+.dp-build {
+  margin: 0;
+  padding: 4px 10px 10px;
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: right;
+  user-select: text;
 }
 
 .dp-header {

@@ -14,6 +14,11 @@
   <body>
     <canvas id="face"></canvas>
     <canvas id="fx" aria-hidden="true"></canvas>
+    <!-- Invite affichée UNIQUEMENT quand le navigateur refuse de démarrer la voix
+         sans geste (cf. « Démarrage automatique » dans main.ts). Elle ne capte
+         aucun clic : c'est le premier contact avec l'écran, où qu'il soit, qui
+         réveille Mochi — le doigt n'a pas à viser. -->
+    <p id="wake" hidden>Touche l’écran pour réveiller Mochi</p>
     <aside id="dev-panel" aria-label="Panneau debug"></aside>
     <script type="module" src="/src/main.ts"></script>
   </body>

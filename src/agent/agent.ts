@@ -27,7 +27,7 @@ export function createAgent(hooks: AgentHooks, apiKey?: string): Agent {
   if (apiKey && apiKey.trim()) {
     return createGeminiAgent(apiKey.trim(), hooks);
   }
-  hooks.log('ℹ pas de clé Gemini (texte) — agent local (mots-clés). Voir .env.local.example');
+  hooks.log('ℹ pas de clé Gemini (texte) — agent local (mots-clés). Panneau → « Clé Gemini »');
   return createLocalAgent(hooks);
 }
 

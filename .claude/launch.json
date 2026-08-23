@@ -17,6 +17,13 @@
       "autoPort": false
     },
     {
+      "name": "mochi-preview",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "preview", "--", "--port", "4173"],
+      "port": 4173,
+      "autoPort": false
+    },
+    {
       "name": "mochi-check",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],

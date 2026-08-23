@@ -13,6 +13,8 @@ declare global {
   interface Navigator {
     readonly bluetooth?: {
       requestDevice(options: unknown): Promise<BluetoothDeviceLite>;
+      /** Robots DÉJÀ appairés à cette origine. Optionnel : voir tryAutoConnect. */
+      getDevices?(): Promise<BluetoothDeviceLite[]>;
     };
   }
 }
@@ -32,8 +34,17 @@ interface BluetoothRemoteGATTServerLite {
   getPrimaryService(uuid: string): Promise<BluetoothRemoteGATTServiceLite>;
 }
 interface BluetoothDeviceLite extends EventTarget {
+  readonly name?: string;
   readonly gatt?: BluetoothRemoteGATTServerLite;
 }
+
+/**
+ * Attente entre deux tentatives de (re)connexion, en ms. Vif au début — un robot
+ * qui reboote revient en une seconde — puis on se calme pour ne pas mouliner la
+ * radio quand il est simplement éteint. Le dernier délai est répété indéfiniment :
+ * allumer le robot suffit alors à le voir arriver, sans toucher au téléphone.
+ */
+const RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 15000];
 
 /**
  * Transport Web Bluetooth. Parle le profil GATT de Mochi (bleProfile.ts),
@@ -53,21 +64,74 @@ export class BleTransport implements Transport {
   private motorCbs: ((e: MotorEvent) => void)[] = [];
   private connectionCbs: ((connected: boolean) => void)[] = [];
   private _connected = false;
+  /** On VEUT être connecté : distingue une perte de lien d'un arrêt demandé. */
+  private wanted = false;
+  private retryTimer: number | null = null;
+  private retryIndex = 0;
 
   get connected(): boolean {
     return this._connected;
+  }
+
+  /**
+   * Un robot est-il déjà désigné ? Vrai dès que l'appairage est connu, MÊME hors
+   * de portée : c'est ce qui permet à l'app de ne pas rouvrir le sélecteur pour
+   * un robot qu'elle sait retrouver toute seule.
+   */
+  get paired(): boolean {
+    return this.device !== null;
   }
 
   async connect(): Promise<void> {
     if (!navigator.bluetooth) {
       throw new Error('Web Bluetooth indisponible (navigateur/contexte non HTTPS ?).');
     }
-    this.device = await navigator.bluetooth.requestDevice({
-      filters: [{ name: MOCHI_DEVICE_NAME }, { services: [MOCHI_SERVICE_UUID] }],
-      optionalServices: [MOCHI_SERVICE_UUID],
-    });
-    this.device.addEventListener('gattserverdisconnected', () => this.handleDisconnect());
+    this.adopt(
+      await navigator.bluetooth.requestDevice({
+        filters: [{ name: MOCHI_DEVICE_NAME }, { services: [MOCHI_SERVICE_UUID] }],
+        optionalServices: [MOCHI_SERVICE_UUID],
+      }),
+    );
     await this.openGatt();
+  }
+
+  /**
+   * Reconnexion SILENCIEUSE au robot déjà appairé : ni clic, ni sélecteur.
+   * Rend `true` si le lien est ouvert, `false` sinon — jamais d'exception, c'est
+   * un confort de démarrage, pas un chemin critique.
+   *
+   * ⚠️ `getDevices()` N'EXISTE PAS PARTOUT, ET C'EST LA VRAIE LIMITE DE TOUT CECI.
+   * L'API qui se souvient d'un appairage est encore expérimentale : sur Chrome
+   * elle dort derrière `chrome://flags/#enable-web-bluetooth-new-permissions-backend`.
+   * Sans elle, `requestDevice` — donc un geste utilisateur — est le SEUL moyen
+   * d'obtenir un `BluetoothDevice`, et aucune astuce côté app n'y change rien.
+   * D'où le `?.` : on tente, l'appelant retombe sur le sélecteur si ça rate.
+   *
+   * ⚠️ `false` ne veut pas dire « renoncé » : robot connu mais hors de portée
+   * (éteint, à l'autre bout de la pièce), une boucle de reprise reste armée.
+   */
+  async tryAutoConnect(): Promise<boolean> {
+    const known = await navigator.bluetooth?.getDevices?.().catch(() => []);
+    if (!known?.length) return false;
+    // Filtre par nom : une origine peut avoir mémorisé d'autres périphériques.
+    const dev = known.find((d) => d.name === MOCHI_DEVICE_NAME);
+    if (!dev) return false;
+    this.adopt(dev);
+    try {
+      await this.openGatt();
+      return true;
+    } catch {
+      this.scheduleRetry();
+      return false;
+    }
+  }
+
+  /** Retient le périphérique et s'abonne à ses pertes de lien. */
+  private adopt(dev: BluetoothDeviceLite): void {
+    this.device = dev;
+    this.wanted = true;
+    this.retryIndex = 0;
+    dev.addEventListener('gattserverdisconnected', () => this.handleDisconnect());
   }
 
   /** (Re)ouvre la session GATT et resouscrit aux notifications. */
@@ -86,14 +150,32 @@ export class BleTransport implements Transport {
     });
     await telemetry.startNotifications();
 
+    this.retryIndex = 0;
     this.setConnected(true);
     console.info('[bleTransport] connecté à Mochi');
+  }
+
+  /**
+   * Retente l'ouverture plus tard. Ne fait rien si l'arrêt était volontaire, ou
+   * si une reprise est déjà armée — sinon deux pertes rapprochées lanceraient
+   * deux boucles, qui se doubleraient à chaque tour.
+   */
+  private scheduleRetry(): void {
+    if (!this.wanted || !this.device || this.retryTimer !== null) return;
+    const delay = RETRY_DELAYS_MS[Math.min(this.retryIndex, RETRY_DELAYS_MS.length - 1)];
+    this.retryIndex++;
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = null;
+      if (!this.wanted || this._connected) return;
+      this.openGatt().catch(() => this.scheduleRetry());
+    }, delay);
   }
 
   private handleDisconnect(): void {
     this.commandChar = null;
     this.setConnected(false);
     console.warn('[bleTransport] déconnecté');
+    this.scheduleRetry();
   }
 
   private setConnected(on: boolean): void {
@@ -103,6 +185,13 @@ export class BleTransport implements Transport {
   }
 
   disconnect(): void {
+    // D'ABORD couper l'intention : sans ça, le `gattserverdisconnected` qui suit
+    // relance aussitôt la boucle de reprise qu'on vient de demander d'arrêter.
+    this.wanted = false;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     this.device?.gatt?.disconnect();
     this.handleDisconnect();
   }

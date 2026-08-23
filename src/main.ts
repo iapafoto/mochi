@@ -13,6 +13,8 @@ import { DevPanel } from './ui/devPanel';
 import type { Agent } from './agent/agent';
 import { createAgent } from './agent/agent';
 import { LiveConversation, type LiveAccess } from './agent/live';
+import { loadGeminiKey, saveGeminiKey, hasStoredKey } from './agent/apiKey';
+import { setupPwa } from './pwa';
 import { DEFAULT_PERSONA, buildSystemInstruction } from './agent/persona';
 import { EmoteLayer } from './fx/emotes';
 import { MoodEngine, ambientFromMood, restingFaceFromMood } from './affect/mood';
@@ -137,18 +139,7 @@ const panel = new DevPanel(panelRoot, {
     mood.nudge(0.03, 0.06); // il aime qu'on lui parle
     void agent.send(text);
   },
-  onConnect: async () => {
-    try {
-      await transport.connect();
-      panel.setConnected(transport.connected);
-      panel.logLine('🤖 connecté — pense à ARMER (le robot boote désarmé)');
-      keepAwake();
-    } catch (e) {
-      // Sélection annulée, pas de HTTPS, robot éteint… ça se voit dans le message.
-      panel.setConnected(false);
-      panel.logLine(`⚠ connexion : ${(e as Error).message}`);
-    }
-  },
+  onConnect: () => void connectRobot(),
   onArm: (on) => {
     // On n'anticipe PAS l'affichage : c'est la télémétrie qui bascule le bouton, donc
     // il ne dit « armé » que si le robot l'a vraiment confirmé.
@@ -225,13 +216,8 @@ const panel = new DevPanel(panelRoot, {
   },
   onLiveToggle: () => {
     if (!live) return;
-    void sound.unlock();
-    if (live.active) {
-      void live.stop();
-    } else {
-      // Le persona courant devient la voix/le caractère de la session.
-      void live.start(buildSystemInstruction(agent.getPersona?.() ?? DEFAULT_PERSONA));
-    }
+    if (live.active) void live.stop();
+    else startLive();
   },
   onLiveStop: () => {
     live?.stopReflex();
@@ -244,6 +230,14 @@ const panel = new DevPanel(panelRoot, {
   },
   onVoiceChange: (name) => void live?.setVoice(name),
   onPitchChange: (factor) => live?.setPitch(factor),
+  // L'agent et la session Live sont construits UNE FOIS au démarrage, à partir
+  // de la clé : la seule façon honnête de la changer à chaud est de repartir de
+  // zéro. Recharger est aussi ce qui évite de laisser tourner une session Live
+  // ouverte avec l'ancienne clé.
+  onGeminiKeyChange: (key) => {
+    saveGeminiKey(key);
+    location.reload();
+  },
 });
 
 // Entrée vocale (push-to-talk) → même chemin que la saisie texte.
@@ -262,12 +256,11 @@ const speech = new SpeechInput({
 });
 panel.setVoiceSupported(speech.supported);
 
-// Clé Gemini brute : lue UNIQUEMENT en dev (localhost). En build de prod, on ne
-// la référence pas → elle n'est jamais inlinée dans le bundle public. En prod, la
-// voix Live passe par un jeton éphémère fabriqué côté serveur (voir plus bas).
-const devKey = import.meta.env.DEV
-  ? (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim()
-  : undefined;
+// Clé Gemini : saisie une fois dans le panneau et gardée sur CET appareil, avec
+// repli sur `.env.local` en dev (cf. agent/apiKey.ts pour le pourquoi). Elle
+// n'est jamais inlinée dans le bundle : rien n'empêche donc de poser l'app sur
+// n'importe quel hébergement statique.
+const { key: geminiKey, source: keySource } = loadGeminiKey();
 
 // L'agent (Gemini si clé présente, sinon règles locales) traduit le texte en
 // intentions et appelle dispatch pour chacune, plus un babil pendant qu'il « parle ».
@@ -280,15 +273,17 @@ agent = createAgent(
     babble: (ms, mood) => sound.babble(ms, mood),
     log: (line) => panel.logLine(line),
   },
-  devKey,
+  geminiKey,
 );
 
 // Conversation vocale Live (vraie voix streamée).
-// - En dev : clé brute locale.
-// - En prod : jeton éphémère fabriqué par /api/live-token.php (la clé reste serveur).
+// - Clé présente (saisie sur l'appareil, ou `.env.local` en dev) : on l'utilise.
+// - Sinon, en prod : repli sur le jeton éphémère de /api/live-token.php, tant que
+//   le déploiement OVH tourne. C'est ce repli qui permet de basculer vers un
+//   hébergement statique sans rien casser en route.
 // Les sons kawaii sont coupés pendant la session pour ne pas parasiter la voix.
-const liveAccess: LiveAccess | null = devKey
-  ? { apiKey: devKey }
+const liveAccess: LiveAccess | null = geminiKey
+  ? { apiKey: geminiKey }
   : import.meta.env.PROD
     ? { tokenEndpoint: import.meta.env.BASE_URL + 'api/live-token.php' }
     : null;
@@ -326,6 +321,10 @@ if (liveAccess) {
   });
 }
 panel.setLiveSupported(!!live);
+// État de la clé : « saisie sur cet appareil » ne se déduit pas de « une clé est
+// active » — en dev, `.env.local` fait marcher Gemini sans que rien ne soit
+// stocké, et c'est précisément l'écart qui rend le champ incompréhensible.
+panel.configureGeminiKey(hasStoredKey(), keySource);
 // La case est restaurée du localStorage à la construction du panneau ; le micro,
 // lui, démarre sur son défaut. Sans cette ligne, un réglage décoché réapparaît
 // coché au rechargement côté capture uniquement — l'écran dit une chose, le micro
@@ -350,23 +349,48 @@ transport.onTelemetry((dv) => {
   panel.setArmed(t.armed);
 });
 
-// Perte de lien subie (robot éteint, hors de portée) : on cesse de piloter. Côté
-// robot le TTL a déjà tout coupé — ici on évite juste que l'app continue de parler
-// dans le vide et remplisse le journal de « non émis ».
+// Lien BLE : le SEUL endroit qui décide de ce qu'affiche le bouton « Connecter ».
+// Il doit l'être, parce que le lien s'ouvre désormais aussi tout seul — au
+// démarrage et à chaque reprise après une coupure. Un état affiché depuis le
+// chemin du clic ne verrait pas passer ces deux-là.
 transport.onConnectionChange((connected) => {
-  if (connected) return;
+  panel.setConnected(connected);
+  if (connected) {
+    panel.logLine('🤖 connecté — pense à ARMER (le robot boote désarmé)');
+    keepAwake();
+    return;
+  }
+  // Perte de lien subie (robot éteint, hors de portée) : on cesse de piloter. Côté
+  // robot le TTL a déjà tout coupé — ici on évite juste que l'app continue de parler
+  // dans le vide et remplisse le journal de « non émis ».
   driveLoop.stop();
-  panel.setConnected(false);
-  panel.logLine('⚠ robot déconnecté');
+  panel.logLine('⚠ robot déconnecté — reprise automatique en cours');
 });
 
-// Débloque l'audio au premier geste, où qu'il soit.
-window.addEventListener('pointerdown', () => void sound.unlock(), { once: true });
+// Premier contact avec l'écran (voir « Démarrage automatique » plus bas).
+window.addEventListener('pointerdown', onFirstGesture, { once: true, capture: true });
 
 // Humeur : décroissance + pilotage de l'affichage (démarré une fois tout câblé).
 startMoodLoop();
 
-console.info('[Mochi] prêt.', agent.info);
+// Service worker : cache durable + politique de mise à jour. `busy()` est ce qui
+// empêche un rechargement de tomber au milieu d'une démo — voir src/pwa.ts.
+setupPwa({
+  busy: () => !!live?.active || transport.connected,
+  log: (line) => panel.logLine(line),
+});
+
+// Lancer l'app, c'est vouloir parler à Mochi : on tente les deux clics tout seul.
+void autoStart();
+
+// Quelle version tourne, et avec quelle clé. Ces deux lignes existent pour la même
+// raison : après un déploiement, l'app peut servir l'ancien cache et lire une clé
+// qu'on ne croyait plus là — deux choses invisibles qui font chercher au mauvais
+// endroit. Le tampon est aussi affiché en bas du panneau, où il ne défile pas.
+panel.setBuildId(__BUILD_ID__);
+panel.logLine(`ℹ build ${__BUILD_ID__} — clé Gemini : ${keySource}`);
+
+console.info('[Mochi] prêt.', agent.info, '| build', __BUILD_ID__);
 
 /**
  * Un déplacement est-il possible en ce moment ? Rend la raison du refus, sinon
@@ -420,6 +444,110 @@ function captureZero(okMessage: string): void {
   // L'assiette doit retomber à ~0° à la prochaine télémétrie : c'est la confirmation
   // visuelle, et elle vaut mieux qu'un accusé de réception dans le protocole.
   panel.logLine(`${okMessage} (était à ${pitch.toFixed(1)}°) — « Enregistrer » pour le garder`);
+}
+
+// --- Démarrage automatique ---------------------------------------------------
+//
+// LE PRINCIPE : lancer l'app, c'est vouloir parler à Mochi. Les deux clics
+// (« Connecter », puis « Démarrer la conversation ») sont donc tentés tout seuls.
+//
+// CE QUE LE NAVIGATEUR LAISSE PASSER SANS GESTE, ET CE QU'IL REFUSE — la liste
+// compte, parce que chaque « non » se manifeste par un silence, pas par une
+// erreur, et qu'on le prendrait pour une panne :
+//   • le lien BLE      → oui, mais vers un robot DÉJÀ appairé, et seulement là où
+//     `getDevices()` existe (cf. BleTransport.tryAutoConnect). Sinon, un geste.
+//   • le MICRO         → oui si l'autorisation a déjà été accordée à cette origine.
+//     Tant qu'elle est à « demander », la demander sans geste tombe dans le vide.
+//   • la VOIX de Mochi → NON par défaut : la politique d'autoplay garde tout
+//     AudioContext en veille tant que la page n'a pas été touchée. L'EXCEPTION qui
+//     nous sauve : une app INSTALLÉE (ajoutée à l'écran d'accueil) y échappe —
+//     c'est exactement ce que décrit le manifeste de ce projet. Ouverte comme un
+//     onglet ordinaire, la même page réclamera un doigt.
+//
+// D'où la règle : on ne démarre en silence que si les trois sont acquis. Sinon on
+// affiche une invite, et le PREMIER contact avec l'écran — n'importe où — fait
+// tout. Un geste au lieu de deux clics, et jamais un geste de plus qu'obligé.
+
+/** Ouvre la conversation vocale avec le caractère courant. Sans effet si elle tourne. */
+function startLive(): void {
+  if (!live || live.active) return;
+  void sound.unlock();
+  // Le persona courant devient la voix/le caractère de la session.
+  void live.start(buildSystemInstruction(agent.getPersona?.() ?? DEFAULT_PERSONA));
+}
+
+/**
+ * Connexion au robot PAR LE SÉLECTEUR (geste utilisateur obligatoire). C'est le
+ * chemin du bouton « Connecter » et celui du premier lancement.
+ */
+async function connectRobot(): Promise<void> {
+  try {
+    await transport.connect(); // le succès passe par onConnectionChange
+  } catch (e) {
+    // Sélection annulée, pas de HTTPS, robot éteint… ça se voit dans le message.
+    panel.logLine(`⚠ connexion : ${(e as Error).message}`);
+  }
+}
+
+async function autoStart(): Promise<void> {
+  // Le lien radio d'abord, et SANS CONDITION : il ne demande rien, n'affiche
+  // rien, ne coûte rien — retrouver le robot tout seul reste utile même quand on
+  // ne veut pas parler. Sans l'attendre non plus : `gatt.connect()` sur un robot
+  // éteint peut mettre longtemps à renoncer, et la voix n'a pas à en dépendre.
+  void transport.tryAutoConnect();
+
+  // Tout ce qui suit peut faire APPARAÎTRE quelque chose (invite, demande de
+  // permission, sélecteur) : c'est ce que la case à cocher gouverne.
+  if (!panel.autoStart || !live) return;
+  if (audioAllowed() && (await micGranted())) {
+    startLive();
+    keepAwake();
+    return;
+  }
+  wakeHint(true);
+}
+
+/**
+ * Premier contact avec l'écran : il débloque l'audio, et c'est la seule fenêtre
+ * où le sélecteur BLE peut s'ouvrir. En capture, pour passer avant les boutons.
+ */
+function onFirstGesture(ev: Event): void {
+  wakeHint(false);
+  void sound.unlock();
+  if (!panel.autoStart) return;
+  startLive();
+  // ⚠️ `requestDevice` ne s'ouvre que DANS le geste : c'est celui-ci, ou aucun.
+  // On s'en abstient si le doigt visait le panneau (son bouton fait déjà ce
+  // travail, et deux sélecteurs d'affilée valent un bug) ou si le robot est déjà
+  // connu — la boucle de reprise le retrouvera sans rien demander à personne.
+  const onPanel = ev.target instanceof Node && panelRoot.contains(ev.target);
+  if (!onPanel && !transport.connected && !transport.paired) void connectRobot();
+}
+
+/** Invite « touche l'écran » — affichée seulement quand le navigateur l'impose. */
+function wakeHint(show: boolean): void {
+  const hint = document.getElementById('wake');
+  if (hint) hint.hidden = !show;
+}
+
+/**
+ * L'autoplay autorise-t-il déjà le son ? Un navigateur qui ne sait pas répondre
+ * est traité comme un refus : une invite de trop se voit et se répare d'un doigt,
+ * alors qu'un Mochi qui écoute mais ne répond pas ne se diagnostique pas.
+ */
+function audioAllowed(): boolean {
+  const nav = navigator as Navigator & {
+    getAutoplayPolicy?(type: string): 'allowed' | 'allowed-muted' | 'disallowed';
+  };
+  return nav.getAutoplayPolicy?.('audiocontext') === 'allowed';
+}
+
+/** Le micro est-il DÉJÀ autorisé ? (« prompt » compte comme non : cf. plus haut.) */
+async function micGranted(): Promise<boolean> {
+  const st = await navigator.permissions
+    ?.query({ name: 'microphone' as PermissionName })
+    .catch(() => null);
+  return st?.state === 'granted';
 }
 
 /** Screen Wake Lock — évite la mise en veille pendant l'usage (M4). */

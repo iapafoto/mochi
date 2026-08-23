@@ -163,13 +163,20 @@ export class LiveConversation {
     this.player.setPitch(factor);
   }
 
-  /** Construit un client Gemini : clé brute (dev) ou jeton éphémère frais (prod). */
+  /** Construit un client Gemini : clé saisie sur l'appareil, ou jeton éphémère. */
   private async resolveClient(): Promise<GoogleGenAI> {
     if (this.access.apiKey) {
       return new GoogleGenAI({ apiKey: this.access.apiKey });
     }
     if (this.access.tokenEndpoint) {
       const res = await fetch(this.access.tokenEndpoint, { cache: 'no-store' });
+      // Un 404 ici n'est pas une panne : c'est un hébergement SANS PHP (pages
+      // statiques) et aucune clé saisie sur l'appareil. Le dire, parce que
+      // « jeton indisponible (404) » envoie chercher du côté du serveur alors
+      // que le correctif tient en un champ du panneau.
+      if (res.status === 404) {
+        throw new Error('pas de serveur de jetons ici — colle ta clé dans « Clé Gemini »');
+      }
       if (!res.ok) throw new Error(`jeton indisponible (${res.status})`);
       const token = (await res.text()).trim();
       if (!token) throw new Error('jeton vide renvoyé par le serveur');
