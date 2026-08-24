@@ -6,9 +6,12 @@
 
 export const Op = {
   STOP: 0x00,
-  FORWARD: 0x01, // int16 cm
-  BACKWARD: 0x02, // int16 cm
-  TURN: 0x03, // int16 deg
+  // 3e octet OPTIONNEL = allure, en % de la croisière odométrique (cf. protocol.h
+  // et driveLoop.ts pour la doctrine « une seule réponse à : à quelle vitesse ce
+  // robot se déplace-t-il »). Absent ⇒ 100 %, l'ancien comportement exact.
+  FORWARD: 0x01, // int16 cm  [+ uint8 allure %]
+  BACKWARD: 0x02, // int16 cm  [+ uint8 allure %]
+  TURN: 0x03, // int16 deg [+ uint8 allure %]
   // Téléguidage CONTINU (manette / joystick), cf. firmware/include/protocol.h :
   //   args = [vitesse %, rotation %, ttl ms]  — % dans −100..+100
   // Ce n'est pas un ordre ponctuel mais un ÉTAT, qui EXPIRE côté robot s'il n'est
@@ -80,10 +83,16 @@ export function encodeMessage(op: number, args: number[]): Uint8Array {
     case Op.FORWARD:
     case Op.BACKWARD:
     case Op.TURN: {
-      const buf = new ArrayBuffer(3);
+      // Allure optionnelle (args[1], % de la croisière odométrique — cf.
+      // protocol.h). On n'émet le 3e octet QUE s'il y a une allure à dire : un
+      // message de 3 octets reste exactement celui d'avant, et un firmware qui
+      // ignore cet octet continue de marcher (il lit `len >= 3`).
+      const pct = args.length > 1 ? Math.max(1, Math.min(255, Math.round(args[1]))) : 0;
+      const buf = new ArrayBuffer(pct ? 4 : 3);
       const dv = new DataView(buf);
       dv.setUint8(0, op);
       dv.setInt16(1, args[0] | 0, true);
+      if (pct) dv.setUint8(3, pct);
       return new Uint8Array(buf);
     }
     case Op.DRIVE: {

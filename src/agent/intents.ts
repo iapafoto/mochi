@@ -37,6 +37,24 @@ export interface IntentCall {
   args: Record<string, unknown>;
 }
 
+/**
+ * Allure des déplacements mesurés — le MÊME paramètre pour forward/backward/turn,
+ * défini une fois (cf. MOVE_SPEEDS dans robot/driveLoop.ts pour les valeurs).
+ *
+ * Il est OPTIONNEL, et c'est le point important : ne rien dire n'est pas un oubli
+ * à corriger, c'est le cas normal — Mochi se déplace alors à l'allure de son
+ * humeur. Le paramètre sert à en sortir sur demande (« vite ! », « tout doux »),
+ * pas à être rempli à chaque appel.
+ */
+const MOVE_SPEED_PARAM: ParamSchema = {
+  type: 'string',
+  enum: ['slow', 'normal', 'fast'],
+  description:
+    "Allure, seulement si on te la demande ou si la situation l'appelle : fast = vite, "
+    + "pour frimer ou quand tu es tout excité ; slow = tout doux, prudent ; normal = ton "
+    + "allure ordinaire. Omets ce paramètre le reste du temps.",
+};
+
 export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
   // --- Expression (visage réel en v1) ---
   {
@@ -99,7 +117,7 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
       'DÉPLACEMENT RÉEL : avance de N centimètres. À n’appeler que si on demande de bouger.',
     parameters: {
       type: 'object',
-      properties: { cm: { type: 'integer', description: 'Distance en cm.' } },
+      properties: { cm: { type: 'integer', description: 'Distance en cm.' }, speed: MOVE_SPEED_PARAM },
       required: ['cm'],
     },
   },
@@ -109,7 +127,7 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
       'DÉPLACEMENT RÉEL : recule de N centimètres. À n’appeler que si on demande de bouger.',
     parameters: {
       type: 'object',
-      properties: { cm: { type: 'integer', description: 'Distance en cm.' } },
+      properties: { cm: { type: 'integer', description: 'Distance en cm.' }, speed: MOVE_SPEED_PARAM },
       required: ['cm'],
     },
   },
@@ -119,7 +137,7 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
       'DÉPLACEMENT RÉEL : pivote sur place de N degrés (positif = droite, négatif = gauche).',
     parameters: {
       type: 'object',
-      properties: { deg: { type: 'integer', description: 'Angle en degrés.' } },
+      properties: { deg: { type: 'integer', description: 'Angle en degrés.' }, speed: MOVE_SPEED_PARAM },
       required: ['deg'],
     },
   },

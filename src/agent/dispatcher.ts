@@ -3,7 +3,16 @@ import { express, look, blink, wink, type Emotion, type LookDir } from '../face/
 import type { SoundEngine, SoundName } from '../audio/sounds';
 import type { Transport } from '../robot/transport';
 import { Op } from '../robot/transport';
-import { DriveLoop, circleDrive, CIRCLE_SPEEDS, type CircleSpeed } from '../robot/driveLoop';
+import {
+  DriveLoop,
+  circleDrive,
+  CIRCLE_SPEEDS,
+  MOVE_SPEEDS,
+  moveSpeedFromArousal,
+  type CircleSpeed,
+  type MoveSpeed,
+} from '../robot/driveLoop';
+import type { MoveQueue } from '../robot/moveQueue';
 import type { IntentCall } from './intents';
 import type { MoodEngine } from '../affect/mood';
 import type { EmoteLayer, EmoteKind } from '../fx/emotes';
@@ -45,6 +54,11 @@ export class Dispatcher {
      * bouge pas, et rien nulle part ne distingue ça d'une panne.
      */
     private readonly moveGate?: () => string | null,
+    /**
+     * File des déplacements mesurés (cf. move()). Absente = émission directe,
+     * donc un seul déplacement à la fois.
+     */
+    private readonly moves?: MoveQueue,
   ) {}
 
   dispatch(call: IntentCall): DispatchResult {
@@ -95,20 +109,12 @@ export class Dispatcher {
 
       // --- Déplacement réel ---
       case 'forward':
-        this.sound.play('move');
-        this.preempt();
-        this.transport.sendIntent(Op.FORWARD, int(a.cm));
-        return ok(call.name, `${int(a.cm)} cm`);
-      case 'backward':
-        this.sound.play('move');
-        this.preempt();
-        this.transport.sendIntent(Op.BACKWARD, int(a.cm));
-        return ok(call.name, `${int(a.cm)} cm`);
+      case 'backward': {
+        const op = call.name === 'forward' ? Op.FORWARD : Op.BACKWARD;
+        return this.move(call.name, op, int(a.cm), a.speed, `${int(a.cm)} cm`);
+      }
       case 'turn':
-        this.sound.play('move');
-        this.preempt();
-        this.transport.sendIntent(Op.TURN, int(a.deg));
-        return ok(call.name, `${int(a.deg)}°`);
+        return this.move(call.name, Op.TURN, int(a.deg), a.speed, `${int(a.deg)}°`);
       case 'circle': {
         if (!this.drive) return { name: call.name, ok: false, detail: 'pas de pilote de trajectoire' };
         const dir = a.dir === 'left' ? 'left' : 'right';
@@ -142,6 +148,59 @@ export class Dispatcher {
       default:
         return { name: call.name, ok: false, detail: 'intention inconnue' };
     }
+  }
+
+  /**
+   * Déplacement MESURÉ (forward / backward / turn) : allure, son, et mise en file.
+   *
+   * ⚠️ PASSE PAR LA FILE, ET C'EST TOUT L'INTÉRÊT. « Avance vite puis recule
+   * lentement » arrive au dispatcher comme deux appels dans la même milliseconde ;
+   * émis tous les deux tout de suite, le second écrase la cible du premier côté
+   * firmware et le robot ne fait que reculer, sans que rien ne le signale. La file
+   * attend que le robot ait fini (TELEM_FLAG_MOVING) avant d'envoyer le suivant.
+   * Sans file (aucune passée au constructeur), on retombe sur l'émission directe :
+   * un seul déplacement à la fois, comme avant.
+   */
+  private move(
+    name: string,
+    op: number,
+    value: number,
+    askedSpeed: unknown,
+    what: string,
+  ): DispatchResult {
+    const { pct, label } = this.allure(askedSpeed);
+    this.sound.play('move');
+    if (!this.moves) {
+      this.preempt();
+      this.transport.sendIntent(op, value, pct);
+      return ok(name, `${what} ${label}`);
+    }
+    // La trajectoire continue ne se préempte qu'une fois, à l'entrée de la file :
+    // le faire à chaque pas couperait un rond qui n'existe déjà plus.
+    if (!this.moves.busy) this.preempt();
+    const queued = this.moves.enqueue({ op, value, pct, label: `${name} ${what} ${label}` });
+    return queued
+      ? ok(name, `${what} ${label}${this.moves.busy ? ' — en file' : ''}`)
+      : { name, ok: false, detail: 'trop de déplacements en attente' };
+  }
+
+  /**
+   * Résout l'allure d'un déplacement mesuré : ce que le modèle a demandé, ou —
+   * s'il n'a rien dit — celle de l'humeur du moment.
+   *
+   * ⚠️ MÊME PRUDENCE QUE POUR `circle` : une valeur non reconnue ne devient JAMAIS
+   * `fast`. Mais ici elle ne devient pas non plus `normal` : elle retombe sur
+   * l'humeur, c'est-à-dire sur le cas « personne n'a demandé d'allure » — parce
+   * qu'un modèle qui invente un mot n'a rien demandé de plus qu'un modèle muet.
+   */
+  private allure(asked: unknown): { pct: number; label: string } {
+    const name = String(asked);
+    if (name in MOVE_SPEEDS) {
+      const scale = MOVE_SPEEDS[name as MoveSpeed];
+      return { pct: Math.round(scale * 100), label: `(${name})` };
+    }
+    const scale = moveSpeedFromArousal(this.mood?.mood.arousal ?? 0.35);
+    return { pct: Math.round(scale * 100), label: `(humeur ×${scale.toFixed(2)})` };
   }
 
   /**

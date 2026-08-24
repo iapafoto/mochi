@@ -518,6 +518,12 @@ constexpr uint32_t TELEOP_TTL_MS = 500;
 // refaire (`M 2000`, relever le dépassement, corriger ODO_BRAKE_LEAD_S).
 constexpr float ODO_MOVE_SPEED_MM_S = 150.0f;  // croisière en ligne droite
 constexpr float ODO_TURN_SPEED_DEG_S = 60.0f;  // croisière en pivot
+// Allure MINIMALE d'un déplacement de l'app, en fraction des deux ci-dessus (cf.
+// OP_FORWARD dans protocol.h). Il y a un plancher parce qu'un pendule inversé ne
+// se déplace pas doucement à volonté : sous une certaine vitesse la boucle
+// externe n'a plus assez d'autorité pour à la fois avancer et tenir debout, et
+// « tout doux » se termine par une chute. En haut, c'est `P`/`R` qui bornent.
+constexpr float ODO_SPEED_SCALE_MIN = 0.5f;
 // Anticipation du freinage : la commande retombe à zéro ce temps-là AVANT la
 // cible, parce que le robot met ≈ τ à s'arrêter. Purement cosmétique — un réglage
 // faux ne fausse PAS la mesure, il déplace juste le point d'arrêt.

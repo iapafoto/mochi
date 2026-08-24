@@ -240,7 +240,13 @@ class Balance {
   // exprès pour ça (cf. Tuning.cpp). Un « avance de 30 cm » de l'app produirait
   // sinon une proposition de calibration techniquement calculée mais mauvaise —
   // et une fois imprimée, rien ne dit qu'il ne faut pas s'en servir.
-  void startOdoMove(float mm, float deg, bool calib = false);
+  //
+  // `speedScale` multiplie la croisière (1 = ODO_MOVE_SPEED_MM_S / _TURN_DEG_S,
+  // les allures auxquelles l'anticipation de freinage a été mesurée). Il est borné
+  // par `P`/`R` : le fond de course du robot reste le fond de course, quoi que
+  // demande l'app. Les mesures de banc (`M`/`T`) n'y touchent pas et gardent 1 —
+  // on ne change pas la vitesse d'une mesure sans refaire la mesure.
+  void startOdoMove(float mm, float deg, bool calib = false, float speedScale = 1.0f);
   bool odoMoveActive() const { return odoPhase_ != 0; }
   enum MoveEnd : uint8_t {
     MOVE_REACHED = 0, // cible d'odométrie atteinte
@@ -420,6 +426,8 @@ class Balance {
   }
   void startTimedMotion(float speedMmS, float steerDegS, uint32_t durationMs);
   void odoMoveTick(uint32_t nowMs); // machine à états du déplacement mesuré
+  /** Allure effective d'un déplacement mesuré, bornée par `P`/`R` (cf. startOdoMove). */
+  float odoScaleFor(bool straight, float asked) const;
   void triggerGesture(uint8_t op);
   float gestureAngleBias(uint32_t nowMs); // non-const : efface gestureOp_ en fin de geste
   float gestureSteerBias(uint32_t nowMs);
@@ -495,6 +503,7 @@ class Balance {
   volatile float odoGoalMm_ = 0.0f;
   volatile float odoGoalDeg_ = 0.0f;
   volatile uint32_t odoDeadlineMs_ = 0;
+  volatile float odoSpeedScale_ = 1.0f; // allure demandée (cf. startOdoMove)
   uint32_t odoSettleAtMs_ = 0;
   uint8_t odoEndReason_ = 0;
   volatile bool odoCalib_ = false; // origine de la demande (console `M`/`T` ou app)

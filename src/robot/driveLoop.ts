@@ -59,6 +59,37 @@ export const CIRCLE_SPEEDS = { slow: 0.45, normal: 0.75, fast: 1 } as const;
 export type CircleSpeed = keyof typeof CIRCLE_SPEEDS;
 
 /**
+ * Allures des déplacements MESURÉS (`forward`/`backward`/`turn`), en % de la
+ * croisière odométrique du firmware — ODO_MOVE_SPEED_MM_S = 150 mm/s et
+ * ODO_TURN_SPEED_DEG_S = 60 °/s. Voyagent dans le 3e octet du message (protocol.h).
+ *
+ * ⚠️ DEUX VOCABULAIRES `slow|normal|fast`, DEUX RÉFÉRENCES, et il faut le savoir en
+ * lisant les chiffres : ceux du dessus sont des fractions du fond de course `P`
+ * (300 mm/s), ceux-ci des multiples d'une croisière volontairement basse. D'où un
+ * `fast` à 180 % qui n'a rien d'un emballement : 270 mm/s, soit toujours sous `P`,
+ * que le firmware fait respecter de son côté (odoScaleFor).
+ *
+ * `normal` vaut exactement 1 : c'est le déplacement d'avant l'allure, à l'octet
+ * près — ce qui garde comparables toutes les mesures de banc déjà faites.
+ */
+export const MOVE_SPEEDS = { slow: 0.6, normal: 1, fast: 1.8 } as const;
+export type MoveSpeed = keyof typeof MOVE_SPEEDS;
+
+/**
+ * Allure quand PERSONNE n'en a demandé : celle de son humeur. C'est le seul
+ * endroit du code où l'état affectif touche au moteur, et c'est délibéré — un
+ * petit robot excité qui se déplace exactement à la même vitesse qu'un petit
+ * robot fatigué n'a pas d'humeur, il a un thème graphique.
+ *
+ * Calé pour que l'humeur de repos (arousal 0,35 — cf. affect/mood.ts) rende
+ * PILE 1 : sans excitation particulière, rien ne change par rapport à avant.
+ */
+export function moveSpeedFromArousal(arousal: number): number {
+  const a = Math.max(0, Math.min(1, arousal));
+  return Math.max(0.8, Math.min(1.45, 0.8 + a * 0.57));
+}
+
+/**
  * Inverse l'expo que le firmware applique à la direction (driveNormalized) :
  *   sortie = (x·|x| + e·x) / (1 + e)
  *

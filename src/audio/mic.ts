@@ -27,6 +27,15 @@ export interface MicCallbacks {
    * opposés. Sans ce chiffre on règle la sensibilité d'un micro qui marche.
    */
   onLevel?(peak: number, sending: boolean): void;
+  /**
+   * Niveau crête de CHAQUE paquet (~40 ms), sans lissage ni throttle.
+   *
+   * Séparé de `onLevel` exprès : celui-là alimente une jauge qu'un œil humain
+   * doit pouvoir lire (150 ms), celui-ci alimente une détection de parole, où
+   * 150 ms de retard sur la fin d'une phrase est précisément ce qu'on cherche à
+   * ne pas avoir. Deux consommateurs, deux cadences.
+   */
+  onFrame?(peak: number): void;
 }
 
 export class MicCapture {
@@ -36,6 +45,8 @@ export class MicCapture {
   private source: MediaStreamAudioSourceNode | null = null;
   private _active = false;
   private _sending = true;
+  private _silenced = false; // cf. setSilenced : on envoie, mais du vide
+  private zeros: Int16Array | null = null;
   private _processing = false; // cf. setProcessing : mesuré au banc le 23/08
   private _gain = 1;
   private boost: GainNode | null = null;
@@ -98,6 +109,23 @@ export class MicCapture {
     this._sending = on;
   }
 
+  /**
+   * Rend le micro SOURD sans rien interrompre : les paquets continuent de partir,
+   * remplis de zéros. Sert à jouer un blip sans qu'il rentre dans le micro.
+   *
+   * ⚠️ POURQUOI PAS `setSending(false)`, QUI EXISTE DÉJÀ. La VAD de la session vit
+   * sur le flux qu'on lui envoie : c'est en voyant passer du silence qu'elle
+   * décide que ton tour est fini. Couper l'envoi ne lui donne pas du silence, il
+   * lui retire la matière — le décompte se suspend. Or le blip qui compte le plus
+   * (« mmh ? ») se joue PILE à la fin de ta phrase : le couper retarderait
+   * exactement la réponse qu'il est censé faire attendre moins.
+   * Envoyer du silence, lui, dit la vérité — il n'y a effectivement personne qui
+   * parle pendant ces 150 ms.
+   */
+  setSilenced(on: boolean): void {
+    this._silenced = on;
+  }
+
   async start(): Promise<boolean> {
     if (this._active) return true;
     try {
@@ -135,7 +163,8 @@ export class MicCapture {
     this.node.port.onmessage = (e) => {
       const pcm = e.data as Int16Array;
       this.reportLevel(pcm);
-      if (this._sending) this.cb.onChunk(int16ToBase64(pcm));
+      if (!this._sending) return;
+      this.cb.onChunk(int16ToBase64(this._silenced ? this.silence(pcm.length) : pcm));
     };
     // Le gain est INSÉRÉ AVANT le worklet, donc la jauge mesure ce que Gemini
     // reçoit vraiment — et pas ce que le micro a capté. C'est le bon point de
@@ -157,18 +186,29 @@ export class MicCapture {
    * une moyenne la noierait dans les silences entre les mots.
    */
   private reportLevel(pcm: Int16Array): void {
-    if (!this.cb.onLevel) return;
+    if (!this.cb.onLevel && !this.cb.onFrame) return;
     let peak = 0;
     for (let i = 0; i < pcm.length; i++) {
       const v = pcm[i] < 0 ? -pcm[i] : pcm[i];
       if (v > peak) peak = v;
     }
+    // Paquet par paquet, avant tout lissage : c'est ce que lit la détection de
+    // parole. Muet pendant un blip, parce que le micro, lui, ENTEND le blip —
+    // sans ce garde-fou Mochi prendrait son propre « mmh ? » pour ta réponse.
+    if (!this._silenced) this.cb.onFrame?.(peak / 32768);
+    if (!this.cb.onLevel) return;
     if (peak > this.peakAcc) this.peakAcc = peak;
     const now = Date.now();
     if (now - this.lastLevelMs < LEVEL_PERIOD_MS) return;
     this.lastLevelMs = now;
     this.cb.onLevel(this.peakAcc / 32768, this._sending);
     this.peakAcc = 0;
+  }
+
+  /** Paquet de zéros de la taille voulue, réutilisé (cf. setSilenced). */
+  private silence(n: number): Int16Array {
+    if (!this.zeros || this.zeros.length !== n) this.zeros = new Int16Array(n);
+    return this.zeros;
   }
 
   async stop(): Promise<void> {

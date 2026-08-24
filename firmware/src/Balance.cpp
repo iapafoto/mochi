@@ -824,6 +824,12 @@ void Balance::onCommand(uint8_t op, const uint8_t* payload, size_t len) {
   auto i16 = [&](void) -> int16_t {
     return len >= 2 ? (int16_t)(payload[0] | (payload[1] << 8)) : 0; // little-endian
   };
+  // Allure optionnelle des déplacements mesurés (3e octet, % de la croisière de
+  // référence). ABSENTE = 1.0, donc un émetteur qui ne connaît pas cet octet —
+  // toute version de l'app antérieure — obtient exactement l'ancien comportement.
+  auto allure = [&](void) -> float {
+    return len >= 3 && payload[2] != 0 ? (float)payload[2] / 100.0f : 1.0f;
+  };
   switch (op) {
     case OP_STOP:
       stopMotion();
@@ -859,14 +865,14 @@ void Balance::onCommand(uint8_t op, const uint8_t* payload, size_t len) {
       if (state_ != STATE_BALANCING) break;
       const float mm = fabsf((float)i16()) * 10.0f;
       if (mm == 0.0f) break; // « avance de 0 » : rien à faire, et pas de cible nulle
-      startOdoMove(op == OP_FORWARD ? +mm : -mm, 0.0f);
+      startOdoMove(op == OP_FORWARD ? +mm : -mm, 0.0f, false, allure());
       break;
     }
     case OP_TURN: {
       if (state_ != STATE_BALANCING) break;
       const float deg = (float)i16();
       if (deg == 0.0f) break;
-      startOdoMove(0.0f, deg);
+      startOdoMove(0.0f, deg, false, allure());
       break;
     }
     case OP_LOOK: {
@@ -931,19 +937,38 @@ void Balance::startTimedMotion(float speedMmS, float steerDegS, uint32_t duratio
 // Départ d'un déplacement MESURÉ (cœur 0). On ne fait que POSER la demande : la
 // remise à zéro de l'odométrie est faite par le cœur 1 au premier tick, pour que
 // le compteur parte exactement du même instant que le mouvement.
-void Balance::startOdoMove(float mm, float deg, bool calib) {
+void Balance::startOdoMove(float mm, float deg, bool calib, float speedScale) {
+  const float scale = odoScaleFor(mm != 0.0f, speedScale);
+  // ⚠️ LE BUDGET DOIT SUIVRE L'ALLURE. Il est calculé à partir du temps nominal du
+  // trajet : laissé sur la croisière de référence, une allure `slow` expirerait
+  // avant d'arriver, et le robot annoncerait un MOVE_TIMEOUT sur un déplacement
+  // parfaitement normal — un faux diagnostic de roue bloquée.
   const uint32_t budget =
       (uint32_t)(ODO_MOVE_TIMEOUT_FACTOR * 1000.0f *
-                 (mm != 0.0f ? fabsf(mm) / ODO_MOVE_SPEED_MM_S
-                             : fabsf(deg) / ODO_TURN_SPEED_DEG_S)) +
+                 (mm != 0.0f ? fabsf(mm) / (ODO_MOVE_SPEED_MM_S * scale)
+                             : fabsf(deg) / (ODO_TURN_SPEED_DEG_S * scale))) +
       ODO_MOVE_TIMEOUT_PAD_MS;
   taskENTER_CRITICAL(&mux_);
   odoGoalMm_ = mm;
   odoGoalDeg_ = deg;
   odoCalib_ = calib;
+  odoSpeedScale_ = scale;
   odoDeadlineMs_ = millis() + budget;
   odoPhase_ = 1;
   taskEXIT_CRITICAL(&mux_);
+}
+
+// Allure effective : bornée en bas (un robot qui rampe ne tient pas son équilibre,
+// la boucle vitesse a besoin d'autorité) et en haut par le fond de course `P`/`R`,
+// qui reste LA réponse à « à quelle vitesse ce robot se déplace-t-il ».
+float Balance::odoScaleFor(bool straight, float asked) const {
+  const float reference = straight ? ODO_MOVE_SPEED_MM_S : ODO_TURN_SPEED_DEG_S;
+  const float ceiling = (straight ? teleopMaxSpeedMmS_ : teleopMaxTurnDegS_) / reference;
+  float s = asked;
+  if (!(s > 0.0f)) s = 1.0f; // NaN, 0, négatif : l'allure de référence
+  if (s < ODO_SPEED_SCALE_MIN) s = ODO_SPEED_SCALE_MIN;
+  if (s > ceiling) s = ceiling;
+  return s;
 }
 
 // Machine à états du déplacement mesuré (cœur 1).
@@ -972,7 +997,10 @@ void Balance::odoMoveTick(uint32_t nowMs) {
   if (phase == 2) {
     const float goal = straight ? goalMm : goalDeg;
     const float done = straight ? odoForwardMm() : odoYawWheelDeg();
-    const float cruise = straight ? ODO_MOVE_SPEED_MM_S : ODO_TURN_SPEED_DEG_S;
+    // L'allure entre ICI, et nulle part ailleurs : `lead` en dépend déjà par
+    // construction (`cruise × τ`), donc le point de lâcher se recale tout seul.
+    const float cruise =
+        (straight ? ODO_MOVE_SPEED_MM_S : ODO_TURN_SPEED_DEG_S) * odoSpeedScale_;
     const float sgn = goal >= 0.0f ? 1.0f : -1.0f;
     // On lâche la commande AVANT la cible : le robot roule encore ≈ v·τ. Le
     // dépassement résiduel est mesuré, pas supposé — il n'entache rien.
@@ -1105,6 +1133,7 @@ TelemetryPacket Balance::telemetry() const {
   p.pitchCdeg = (int16_t)lroundf(pitchDeg_ * 100.0f);
   p.wheelSpeed = (int16_t)lroundf(motorSpeedMmS_);
   p.distanceMm = SONAR_NO_ECHO; // renseigné par main.cpp (fusion avec le sonar)
-  p.flags = (motorsOn_ ? TELEM_FLAG_MOTORS : 0) | (armed_ ? TELEM_FLAG_ARMED : 0);
+  p.flags = (motorsOn_ ? TELEM_FLAG_MOTORS : 0) | (armed_ ? TELEM_FLAG_ARMED : 0) |
+            (odoMoveActive() ? TELEM_FLAG_MOVING : 0);
   return p;
 }

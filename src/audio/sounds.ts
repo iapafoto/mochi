@@ -15,7 +15,12 @@ export type SoundName =
   | 'wink'
   | 'greeting'
   | 'move'
-  | 'error';
+  | 'error'
+  // --- Sons de CONVERSATION (joués pendant une session Live, cf. setVoiceMode) ---
+  | 'thinking' // « mmh ? » — dès que tu te tais, AVANT que le modèle réponde
+  | 'backchannel' // « mmh » d'écoute, pendant que tu parles
+  | 'fall' // il vient de tomber
+  | 'recover'; // on vient de le relever
 
 interface Blip {
   f0: number; // fréquence de départ (Hz)
@@ -29,6 +34,13 @@ interface Blip {
 
 // Gamme pentatonique majeure (C) sur deux octaves — sonorités « mignonnes ».
 const PENTA = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51];
+
+/**
+ * Rallonge du portillon micro après le dernier échantillon d'un son. Le
+ * haut-parleur du téléphone continue de sonner un peu, et la pièce répond : sans
+ * cette queue, c'est la réverbération du blip qui rentre dans le micro.
+ */
+const BLIP_TAIL_MS = 120;
 
 // Motifs par son : suite de blips.
 const PATTERNS: Record<SoundName, Blip[]> = {
@@ -69,13 +81,32 @@ const PATTERNS: Record<SoundName, Blip[]> = {
     { f0: PENTA[1], dur: 0.1, gain: 0.4, type: 'square' },
     { f0: 392, dur: 0.16, gain: 0.4, type: 'square', delay: 0.1 },
   ],
+  // Court et MONTANT = une question, « mmh ? ». C'est le son qui comble le trou
+  // entre la fin de ta phrase et le premier mot du modèle : il doit être bref
+  // (il sera recouvert par la voix) et interrogatif (il annonce une réponse).
+  thinking: [{ f0: PENTA[2], f1: PENTA[4], dur: 0.13, gain: 0.3, type: 'sine', vibrato: 6 }],
+  // Plat et DISCRET = « je t'écoute », pas « je réponds ». Joué pendant que TU
+  // parles : la moindre intonation ressemblerait à une interruption.
+  backchannel: [{ f0: PENTA[1], dur: 0.09, gain: 0.16, type: 'sine' }],
+  // Descente longue = la chute. Deux voix qui glissent vers le grave.
+  fall: [
+    { f0: PENTA[4], f1: 220, dur: 0.5, gain: 0.45, type: 'triangle', vibrato: 9 },
+    { f0: 330, f1: 165, dur: 0.45, gain: 0.3, type: 'sine', delay: 0.12 },
+  ],
+  // Remontée franche = on l'a relevé. Le symétrique exact de `fall`.
+  recover: [
+    { f0: 330, f1: PENTA[3], dur: 0.18, gain: 0.4, type: 'triangle' },
+    { f0: PENTA[4], f1: PENTA[6], dur: 0.2, gain: 0.5, delay: 0.16, vibrato: 8 },
+  ],
 };
 
 export class SoundEngine {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private _muted = false;
-  private _suppressed = false;
+  private _voiceMode = false;
+  /** Prévenu AVANT chaque son, avec sa durée : cf. onWillPlay. */
+  private willPlay: ((durationMs: number) => void) | null = null;
 
   get muted(): boolean {
     return this._muted;
@@ -83,16 +114,46 @@ export class SoundEngine {
 
   setMuted(v: boolean): void {
     this._muted = v;
-    if (this.master) this.master.gain.value = v ? 0 : 0.9;
+    this.applyGain();
   }
 
   /**
-   * Suppression temporaire des sons kawaii, indépendante du mute utilisateur.
-   * Activée pendant la conversation Live : Mochi a une vraie voix, le babil et
-   * les blips d'émotion la parasiteraient (et reviendraient dans son micro).
+   * Mode « Mochi a une vraie voix » (session Live ouverte).
+   *
+   * ⚠️ CE MODE COUPAIT TOUT, ET C'ÉTAIT TROP LARGE. Les blips d'émotion et le
+   * `move` du dispatcher ne sortaient donc JAMAIS en usage réel — tout ce moteur
+   * de sons ne servait qu'au mode texte. Ce qu'il fallait vraiment empêcher, c'est
+   * deux choses précises :
+   *   • le BABIL, qui est une fausse voix : elle n'a plus lieu d'être quand la
+   *     vraie parle, et se superposerait à elle. Lui reste coupé.
+   *   • le RETOUR DANS LE MICRO : un blip capté relance un tour (la VAD est en
+   *     sensibilité haute). C'est le rôle de `onWillPlay`, qui fait taire l'envoi
+   *     micro pendant la durée exacte du son — le même mécanisme que l'anti-larsen.
+   * Le niveau baisse un peu : les blips PONCTUENT la voix, ils ne la couvrent pas.
    */
-  setSuppressed(v: boolean): void {
-    this._suppressed = v;
+  setVoiceMode(v: boolean): void {
+    this._voiceMode = v;
+    this.applyGain();
+  }
+
+  /**
+   * Branche le portillon micro. Appelé juste AVANT de programmer un son, avec sa
+   * durée totale — à charge de l'appelant de faire taire l'entrée pendant ce
+   * temps-là (cf. LiveConversation.gateMicFor).
+   */
+  onWillPlay(cb: (durationMs: number) => void): void {
+    this.willPlay = cb;
+  }
+
+  private applyGain(): void {
+    if (this.master) this.master.gain.value = this._muted ? 0 : this._voiceMode ? 0.5 : 0.9;
+  }
+
+  /** Durée totale d'un motif (dernier blip programmé), en ms. */
+  durationOf(name: SoundName): number {
+    let end = 0;
+    for (const b of PATTERNS[name]) end = Math.max(end, (b.delay ?? 0) + b.dur);
+    return Math.round(end * 1000);
   }
 
   /** À appeler sur un geste utilisateur (clic) pour autoriser l'audio. */
@@ -102,16 +163,24 @@ export class SoundEngine {
   }
 
   play(name: SoundName): void {
-    if (this._muted || this._suppressed) return;
+    if (this._muted) return;
     const ctx = this.ensure();
     if (!ctx || ctx.state !== 'running') return; // pas encore débloqué
+    // Le portillon d'abord : la queue couvre la réverbération du haut-parleur,
+    // qui arrive APRÈS le dernier échantillon et se ferait entendre sans elle.
+    this.willPlay?.(this.durationOf(name) + BLIP_TAIL_MS);
     const t0 = ctx.currentTime;
-    for (const b of PATTERNS[name]) this.blip(ctx, b, t0);
+    // Micro-désaccord à chaque lecture : deux `blink` d'affilée rigoureusement
+    // identiques s'entendent comme un bip de machine. ±3 %, c'est inaudible comme
+    // écart et parfaitement audible comme absence.
+    const detune = 1 + (Math.random() - 0.5) * 0.06;
+    for (const b of PATTERNS[name]) this.blip(ctx, b, t0, detune);
   }
 
   /** Babil « façon petit animal » pendant que Mochi « parle ». */
   babble(durationMs: number, mood: 'up' | 'down' | 'flat' = 'up'): void {
-    if (this._muted || this._suppressed) return;
+    // Coupé en mode voix : c'est une FAUSSE voix, et la vraie parle (cf. setVoiceMode).
+    if (this._muted || this._voiceMode) return;
     const ctx = this.ensure();
     if (!ctx || ctx.state !== 'running') return;
     const t0 = ctx.currentTime;
@@ -143,15 +212,15 @@ export class SoundEngine {
     return this.ctx;
   }
 
-  private blip(ctx: AudioContext, b: Blip, t0: number): void {
+  private blip(ctx: AudioContext, b: Blip, t0: number, detune = 1): void {
     if (!this.master) return;
     const start = t0 + (b.delay ?? 0);
     const end = start + b.dur;
 
     const osc = ctx.createOscillator();
     osc.type = b.type ?? 'triangle';
-    osc.frequency.setValueAtTime(b.f0, start);
-    if (b.f1 && b.f1 !== b.f0) osc.frequency.exponentialRampToValueAtTime(b.f1, end);
+    osc.frequency.setValueAtTime(b.f0 * detune, start);
+    if (b.f1 && b.f1 !== b.f0) osc.frequency.exponentialRampToValueAtTime(b.f1 * detune, end);
 
     // Enveloppe d'amplitude (attaque courte, chute douce) → sonorité « pouet ».
     const g = ctx.createGain();

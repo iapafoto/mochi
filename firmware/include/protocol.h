@@ -11,9 +11,21 @@
 // ─────────────────────────────────────────────────────────────────────────
 enum Opcode : uint8_t {
   OP_STOP = 0x00,     // —              réflexe : stoppe tout déplacement (reste debout)
-  OP_FORWARD = 0x01,  // int16 cm       avance de N cm
-  OP_BACKWARD = 0x02, // int16 cm       recule de N cm
-  OP_TURN = 0x03,     // int16 deg      pivote (+ = droite)
+  // ALLURE (3e octet, OPTIONNEL) : % de la croisière odométrique de référence
+  // (ODO_MOVE_SPEED_MM_S / ODO_TURN_SPEED_DEG_S). Absent ou 0 ⇒ 100 %, donc le
+  // comportement d'avant, à l'octet près — les mesures de banc restent valides.
+  // ⚠️ POURQUOI ON PEUT SE PERMETTRE DE FAIRE VARIER CETTE VITESSE-LÀ, alors que
+  // config.h dit qu'elle est « une mesure, pas un réglage de goût » : ces
+  // déplacements terminent sur l'ODOMÉTRIE, pas au chronomètre. Le seul paramètre
+  // qui dépendait de la vitesse était l'anticipation de freinage, et elle
+  // s'exprime déjà en `cruise × τ` (odoMoveTick) — elle se mettait donc à
+  // l'échelle toute seule. τ, lui, est une propriété du robot. Ce qui resterait
+  // faux à haute vitesse, c'est le dépassement RÉSIDUEL, et il n'entache rien :
+  // l'odométrie compte ce qui a été parcouru, dépassement compris.
+  // Borné à `P`/`R` côté firmware : le fond de course reste le fond de course.
+  OP_FORWARD = 0x01,  // int16 cm  [+ uint8 allure %]   avance de N cm
+  OP_BACKWARD = 0x02, // int16 cm  [+ uint8 allure %]   recule de N cm
+  OP_TURN = 0x03,     // int16 deg [+ uint8 allure %]   pivote (+ = droite)
   // Téléguidage CONTINU (manette / joystick / pad du banc). Payload :
   //   int8 speed   −100..+100 = % de TELEOP_MAX_SPEED_MM_S (+ = avant)
   //   int8 steer   −100..+100 = % de TELEOP_MAX_TURN_DEG_S (+ = droite)
@@ -98,6 +110,14 @@ constexpr uint8_t TELEM_FLAG_MOTORS = 0x02;
 // le relève : afficher « désarmé » dans cet état ferait cliquer « Armer » pour rien,
 // et le clic suivant le désarmerait pour de bon.
 constexpr uint8_t TELEM_FLAG_ARMED = 0x04;
+// ⚠️ LE BIT QUI PERMET D'ENCHAÎNER DEUX DÉPLACEMENTS. Un déplacement mesuré se
+// termine sur l'odométrie, donc sa DURÉE n'est connue de personne à l'avance — ni
+// de l'app, ni du robot. Sans ce bit, un émetteur qui veut « avance puis recule »
+// n'a que le chronomètre pour deviner quand envoyer le second ordre, et s'il se
+// trompe le second ANNULE le premier en silence (startOdoMove écrase la cible).
+// Il couvre tout le déplacement, stabilisation comprise : c'est bien « je suis
+// occupé », pas « mes roues tournent ».
+constexpr uint8_t TELEM_FLAG_MOVING = 0x08;
 
 #pragma pack(push, 1)
 struct TelemetryPacket {

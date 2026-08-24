@@ -1,13 +1,14 @@
 import './style.css';
 import { FaceState, REST_FACE } from './face/faceState';
 import { FaceRenderer } from './face/faceRenderer';
-import { startAutoBlink } from './face/expressions';
+import { startAutoBlink, express } from './face/expressions';
 import { SoundEngine } from './audio/sounds';
 import { SpeechInput } from './audio/speech';
 import { BleTransport } from './robot/bleTransport';
 import { Op } from './robot/transport';
-import { parseTelemetry, RobotState, type Telemetry } from './robot/bleProfile';
+import { parseTelemetry, RobotState, type RobotStateValue, type Telemetry } from './robot/bleProfile';
 import { DriveLoop } from './robot/driveLoop';
+import { MoveQueue } from './robot/moveQueue';
 import { Dispatcher } from './agent/dispatcher';
 import { DevPanel } from './ui/devPanel';
 import type { Agent } from './agent/agent';
@@ -18,6 +19,8 @@ import { setupPwa } from './pwa';
 import { DEFAULT_PERSONA, buildSystemInstruction } from './agent/persona';
 import { EmoteLayer } from './fx/emotes';
 import { MoodEngine, ambientFromMood, restingFaceFromMood } from './affect/mood';
+import { LocalVad } from './audio/vad';
+import { Backchannel } from './affect/backchannel';
 
 // --- Câblage des couches ---
 const canvas = document.getElementById('face') as HTMLCanvasElement;
@@ -36,7 +39,25 @@ const mood = new MoodEngine();
 const driveLoop = new DriveLoop(transport, (completed) =>
   panel.logLine(completed ? '○ rond terminé' : '○ rond interrompu'),
 );
-const dispatcher = new Dispatcher(face, sound, transport, mood, emotes, driveLoop, moveGate);
+// File des déplacements mesurés : c'est elle qui rend « avance vite, puis recule
+// lentement » possible. Les deux ordres arrivent ensemble ; sans elle, le second
+// écrase le premier côté firmware, en silence (cf. robot/moveQueue.ts).
+const moveQueue = new MoveQueue(transport, {
+  // `null` = on ne sait pas : pas de robot au bout, ou pas encore de télémétrie.
+  isMoving: () => (transport.connected && lastTelemetry ? lastTelemetry.moving : null),
+  gate: () => moveGate(),
+  log: (line) => panel.logLine(line),
+});
+const dispatcher = new Dispatcher(
+  face,
+  sound,
+  transport,
+  mood,
+  emotes,
+  driveLoop,
+  moveGate,
+  moveQueue,
+);
 
 const renderer = new FaceRenderer(canvas, face);
 renderer.start();
@@ -70,6 +91,37 @@ const CALIB_MAX_TILT_DEG = 20;
 // Conversation vocale Live (créée plus bas si une clé Gemini est présente).
 // Référencée en différé par les handlers du panneau, comme `agent`.
 let live: LiveConversation | null = null;
+
+// --- Écoute active -----------------------------------------------------------
+//
+// Ce que Mochi fait PENDANT que tu parles, et dans les ~300 ms qui suivent — le
+// seul registre expressif qui ne passe ni par le réseau ni par le modèle, donc le
+// seul qui soit vraiment instantané. Cf. affect/backchannel.ts et audio/vad.ts.
+const backchannel = new Backchannel(face, {
+  playHum: () => sound.play('backchannel'),
+});
+
+/** Anti-répétition du « mmh ? » : il perdrait tout s'il tombait à chaque phrase. */
+let lastThinkingMs = 0;
+const THINKING_COOLDOWN_MS = 6000;
+/** Une phrase plus courte que ça est un bruit, pas un tour de parole. */
+const THINKING_MIN_TURN_MS = 700;
+
+const vad = new LocalVad({
+  onSpeechStart: () => backchannel.start(),
+  onSpeechEnd: (durationMs) => {
+    backchannel.stop();
+    // LE son qui comble le trou : joué ICI, à la fin de TA phrase, donc avant que
+    // le modèle ait produit quoi que ce soit. C'est tout l'intérêt d'une détection
+    // locale — la session, elle, n'a même pas encore décidé que ton tour est fini.
+    const now = Date.now();
+    if (durationMs < THINKING_MIN_TURN_MS) return;
+    if (now - lastThinkingMs < THINKING_COOLDOWN_MS) return;
+    lastThinkingMs = now;
+    sound.play('thinking');
+    face.setTarget({ channels: { gazeY: 0.3, gazeX: 0.22, pupil: 0.7 }, tau: 0.16 });
+  },
+});
 
 // Anime la bouche pendant que Mochi parle (piloté par l'amplitude de la voix).
 let voiceLevel = 0;
@@ -105,8 +157,20 @@ function startMoodLoop(): void {
 
     // Le visage au repos reflète l'humeur quand aucune émotion récente (le
     // flap de bouche pendant que Mochi parle a priorité → on n'y touche pas).
-    if (mood.idleFor > 3.5 && flapTimer === null) {
+    // L'écoute active aussi : elle écrit les mêmes canaux 25 fois par seconde,
+    // et cette boucle-ci, qui tourne à 10 Hz, gagnerait une fois sur deux — le
+    // visage attentif se ferait effacer en plein milieu d'une phrase.
+    if (mood.idleFor > 3.5 && flapTimer === null && !backchannel.active) {
       face.setTarget({ channels: restingFaceFromMood(m), tau: 0.9 });
+    }
+
+    // Tant qu'il est COUCHÉ, il reste triste. Sans cette relance, l'humeur
+    // remonterait toute seule vers sa baseline joyeuse (τ = 22 s) et on aurait un
+    // robot ravi, le nez sur la moquette, incapable de se relever.
+    if (lastTelemetry?.state === RobotState.FALLEN && Date.now() - lastWhimperMs > WHIMPER_PERIOD_MS) {
+      lastWhimperMs = Date.now();
+      mood.nudge(-0.25, -0.05);
+      sound.play('sadness');
     }
 
     // Emotes automatiques sur bascule d'humeur (anti-spam par cooldown).
@@ -143,7 +207,10 @@ const panel = new DevPanel(panelRoot, {
   onArm: (on) => {
     // On n'anticipe PAS l'affichage : c'est la télémétrie qui bascule le bouton, donc
     // il ne dit « armé » que si le robot l'a vraiment confirmé.
-    if (!on) driveLoop.stop();
+    if (!on) {
+      moveQueue.clear();
+      driveLoop.stop();
+    }
     // Le zéro se capture AVANT l'armement : après, le robot corrige déjà et la pose
     // qu'on lui désignerait ne serait plus celle de la main.
     if (on && panel.zeroOnArm) captureZero('⌖ zéro capturé en armant');
@@ -223,7 +290,10 @@ const panel = new DevPanel(panelRoot, {
     live?.stopReflex();
     // L'ordre compte : couper le réémetteur AVANT le STOP. L'inverse enverrait le
     // STOP puis, 100 ms plus tard, la consigne suivante du rond — un bouton d'arrêt
-    // qui n'arrête rien est pire que pas de bouton du tout.
+    // qui n'arrête rien est pire que pas de bouton du tout. Même raison pour la
+    // file : un STOP qui laisserait repartir le déplacement suivant trois secondes
+    // plus tard serait exactement le même bug, avec un délai.
+    moveQueue.clear();
     driveLoop.stop();
     transport.sendIntent(Op.STOP); // réflexe moteur (sécurité)
     panel.logLine('⏹ STOP (réflexe local)');
@@ -286,17 +356,36 @@ if (geminiKey) {
       if (status === 'error' && detail) panel.logLine(`⚠ Live : ${detail}`);
       const running = status !== 'idle' && status !== 'error';
       panel.setLiveActive(running); // pilote le bouton depuis l'état réel (gère les relances)
-      sound.setSuppressed(running);
+      sound.setVoiceMode(running);
       if (running) keepAwake();
-      else stopMouthFlap();
+      else {
+        stopMouthFlap();
+        backchannel.stop();
+        vad.reset();
+      }
     },
     onUserText: (t) => {
       panel.logLine(`🎤 « ${t} »`);
       mood.nudge(0.02, 0.05);
     },
     onMochiText: (t) => panel.logLine(`💬 Mochi : ${t}`),
-    onSpeakingChange: (speaking) => (speaking ? startMouthFlap() : stopMouthFlap()),
+    onSpeakingChange: (speaking) => {
+      if (speaking) {
+        startMouthFlap();
+        // Il prend la parole : l'écoute s'arrête, et la détection repart de zéro.
+        // Sans ce reset, sa propre voix — que le micro entend malgré tout — laisse
+        // le détecteur en état « ça parle », et le tour suivant démarre déjà ouvert.
+        backchannel.stop();
+        vad.reset();
+      } else {
+        stopMouthFlap();
+      }
+    },
     onLevel: (lvl) => (voiceLevel = lvl),
+    onMicFrame: (peak) => {
+      vad.push(peak);
+      backchannel.push(vad.level, vad.speakingForMs(), vad.pauseMs());
+    },
     // Le seul moyen de savoir, DEPUIS LE TÉLÉPHONE, pourquoi Mochi parle bas :
     // sur Android le repli sort au volume d'APPEL, et il ne se signale nulle part.
     onRoute: (viaElement, detail) =>
@@ -312,6 +401,11 @@ if (geminiKey) {
     },
   });
 }
+// Le portillon micro : chaque blip kawaii rend le micro sourd le temps qu'il dure,
+// pour ne pas revenir dans la session (cf. SoundEngine.setVoiceMode). C'est CE
+// branchement qui rend les sons jouables pendant une conversation — sans lui, il
+// fallait tous les couper, et c'est ce qu'on faisait.
+sound.onWillPlay((ms) => live?.gateMicFor(ms));
 panel.setLiveSupported(!!live);
 // État de la clé : « saisie sur cet appareil » ne se déduit pas de « une clé est
 // active » — en dev, `.env.local` fait marcher Gemini sans que rien ne soit
@@ -336,9 +430,11 @@ transport.onMotorEvent((e) => panel.logMotor(e));
 transport.onTelemetry((dv) => {
   const t = parseTelemetry(dv);
   if (!t) return;
+  const previous = lastTelemetry?.state;
   lastTelemetry = t;
   panel.setTelemetry(t);
   panel.setArmed(t.armed);
+  if (previous !== undefined && previous !== t.state) reactToState(previous, t.state);
 });
 
 // Lien BLE : le SEUL endroit qui décide de ce qu'affiche le bouton « Connecter ».
@@ -355,6 +451,7 @@ transport.onConnectionChange((connected) => {
   // Perte de lien subie (robot éteint, hors de portée) : on cesse de piloter. Côté
   // robot le TTL a déjà tout coupé — ici on évite juste que l'app continue de parler
   // dans le vide et remplisse le journal de « non émis ».
+  moveQueue.clear();
   driveLoop.stop();
   panel.logLine('⚠ robot déconnecté — reprise automatique en cours');
 });
@@ -383,6 +480,43 @@ panel.setBuildId(__BUILD_ID__);
 panel.logLine(`ℹ build ${__BUILD_ID__} — clé Gemini : ${keySource}`);
 
 console.info('[Mochi] prêt.', agent.info, '| build', __BUILD_ID__);
+
+// --- Réflexes de posture -----------------------------------------------------
+//
+// Tomber et être relevé sont les deux choses les plus marquantes qui arrivent à ce
+// robot, et jusqu'ici elles ne se lisaient que dans une ligne de journal. Or la
+// donnée est déjà là, dix fois par seconde, dans la télémétrie.
+//
+// C'est un RÉFLEXE, pas une réaction du modèle : il part en ~100 ms (le temps
+// d'une notification BLE), sans réseau ni tokens. Un être vivant sursaute d'abord
+// et commente ensuite ; ici, pour l'instant, il ne fait que sursauter.
+
+/** Dernière relance de tristesse pendant qu'il est couché (cf. startMoodLoop). */
+let lastWhimperMs = 0;
+const WHIMPER_PERIOD_MS = 6000;
+
+function reactToState(previous: RobotStateValue, next: RobotStateValue): void {
+  if (next === RobotState.FALLEN) {
+    express(face, 'sadness', 0.9);
+    sound.play('fall');
+    emotes.spawn('rain');
+    mood.nudge(-0.6, -0.15);
+    lastWhimperMs = Date.now();
+    panel.logLine('💔 il est tombé…');
+    return;
+  }
+  // On ne se réjouit QUE si on revient de la chute. Le premier armement passe
+  // aussi par IDLE → BALANCING, et fêter ça donnerait une explosion de joie à
+  // chaque mise en route — la même que celle du sauvetage, donc plus aucune des
+  // deux ne voudrait dire quoi que ce soit.
+  if (next === RobotState.BALANCING && previous === RobotState.FALLEN) {
+    express(face, 'joy', 0.95);
+    sound.play('recover');
+    emotes.spawn('sparkles');
+    mood.nudge(0.7, 0.3);
+    panel.logLine('✨ le revoilà debout !');
+  }
+}
 
 /**
  * Un déplacement est-il possible en ce moment ? Rend la raison du refus, sinon

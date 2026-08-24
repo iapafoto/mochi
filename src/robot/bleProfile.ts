@@ -61,7 +61,7 @@ export type RobotStateValue = (typeof RobotState)[keyof typeof RobotState];
  * | 2..3   | int16  | pitchCdeg    | inclinaison, centidegrés (°×100)       |
  * | 4..5   | int16  | wheelSpeed   | vitesse roues, mm/s                     |
  * | 6..7   | uint16 | distanceMm   | HC-SR04, mm (0xFFFF = pas d'écho)       |
- * | 8      | uint8  | flags        | bit0=obstacle bit1=moteursActifs bit2=armé |
+ * | 8      | uint8  | flags        | bit0=obstacle bit1=moteursActifs bit2=armé bit3=déplacement |
  */
 export const TELEMETRY_VERSION = 1;
 export const TELEMETRY_SIZE = 9;
@@ -84,6 +84,12 @@ export interface Telemetry {
    * Le robot boote désarmé — sans Op.ARM, tout déplacement est ignoré en silence.
    */
   armed: boolean;
+  /**
+   * Un déplacement MESURÉ est en cours (trajet + stabilisation). C'est le seul
+   * signal qui dise quand il est fini : sa durée n'est connue à l'avance de
+   * personne, puisque c'est l'odométrie qui l'arrête. Cf. MoveQueue.
+   */
+  moving: boolean;
 }
 
 /** Distance renvoyée par le sonar quand aucun écho n'est reçu. */
@@ -104,5 +110,6 @@ export function parseTelemetry(dv: DataView): Telemetry | null {
     obstacle: (flags & 0x01) !== 0,
     motorsEnabled: (flags & 0x02) !== 0,
     armed: (flags & 0x04) !== 0,
+    moving: (flags & 0x08) !== 0,
   };
 }

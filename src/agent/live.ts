@@ -70,6 +70,8 @@ export interface LiveConversationCallbacks {
   onRoute?(viaElement: boolean, detail: string): void;
   /** Niveau crête du micro (0..1) et si le paquet part vraiment (cf. MicCapture). */
   onMicLevel?(peak: number, sending: boolean): void;
+  /** Niveau crête de chaque paquet (~40 ms), non lissé — pour la détection de parole. */
+  onMicFrame?(peak: number): void;
   /** Un function call de Mochi → intention (visage/moteur). */
   dispatch(call: IntentCall): void;
 }
@@ -82,6 +84,10 @@ export class LiveConversation {
   private stopping = false;
   private voice = DEFAULT_VOICE;
   private systemInstruction = ''; // mémorisé pour relancer sur changement de voix
+  /** Mochi parle-t-il ? (miroir de VoicePlayer, pour le portillon des blips.) */
+  private speaking = false;
+  /** Échéance du portillon micro (cf. gateMicFor). */
+  private gateTimer: number | null = null;
 
   // Accumulateurs de transcription (vidés à chaque fin de tour).
   private inBuf = '';
@@ -95,6 +101,7 @@ export class LiveConversation {
   ) {
     this.player = new VoicePlayer({
       onSpeaking: (sp) => {
+        this.speaking = sp;
         this.mic.setSending(!sp); // ne pas s'écouter parler
         this.cb.onSpeakingChange?.(sp);
         if (this.session) this.cb.onStatus(sp ? 'speaking' : 'listening');
@@ -107,6 +114,7 @@ export class LiveConversation {
         this.session?.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } }),
       onError: (m) => this.fail(m),
       onLevel: (peak, sending) => this.cb.onMicLevel?.(peak, sending),
+      onFrame: (peak) => this.cb.onMicFrame?.(peak),
     });
     this.player.setPitch(DEFAULT_PITCH);
   }
@@ -151,6 +159,26 @@ export class LiveConversation {
   /** Hauteur de la voix (1 = naturelle, >1 = plus aiguë/bébé). Effet immédiat. */
   setPitch(factor: number): void {
     this.player.setPitch(factor);
+  }
+
+  /**
+   * Rend le micro sourd pendant `ms` — le temps d'un blip kawaii, pour qu'il ne
+   * revienne pas dans la session (la VAD est en sensibilité haute : un « pouet »
+   * suffirait à ouvrir un tour).
+   *
+   * Sans effet quand Mochi parle : l'envoi est déjà coupé par l'anti-larsen, et
+   * lever le portillon derrière lui rouvrirait le micro trop tôt. Les appels
+   * s'écrasent (le dernier gagne) plutôt que de s'empiler : deux blips qui se
+   * chevauchent ne demandent qu'une seule fenêtre, la plus tardive.
+   */
+  gateMicFor(ms: number): void {
+    if (!this.session || this.speaking) return;
+    this.mic.setSilenced(true);
+    if (this.gateTimer !== null) window.clearTimeout(this.gateTimer);
+    this.gateTimer = window.setTimeout(() => {
+      this.gateTimer = null;
+      this.mic.setSilenced(false);
+    }, ms);
   }
 
   /** Construit un client Gemini : clé saisie sur l'appareil, ou jeton éphémère. */
@@ -220,6 +248,11 @@ export class LiveConversation {
     this.session = null;
     this.inBuf = this.outBuf = '';
     this.userFlushed = false;
+    this.speaking = false;
+    if (this.gateTimer !== null) {
+      window.clearTimeout(this.gateTimer);
+      this.gateTimer = null;
+    }
     await this.mic.stop();
     await this.player.close();
     try {
