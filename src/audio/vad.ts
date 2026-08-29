@@ -13,8 +13,12 @@
 
 export interface VadCallbacks {
   onSpeechStart(): void;
-  /** Fin de parole, avec la durée du passage (sert à ignorer les brefs bruits). */
-  onSpeechEnd(durationMs: number): void;
+  /**
+   * Fin de parole. `durationMs` sert à ignorer les brefs bruits ; `peak` est la
+   * crête ATTEINTE PENDANT CE PASSAGE — la seule mesure honnête du niveau auquel
+   * la voix arrive, puisqu'elle exclut par construction les silences.
+   */
+  onSpeechEnd(durationMs: number, peak: number): void;
 }
 
 /** Ce que le détecteur voit, pour pouvoir le DIAGNOSTIQUER depuis le téléphone. */
@@ -94,6 +98,8 @@ export class LocalVad {
   private above = 0;
   private lastLoudMs = 0;
   private startedMs = 0;
+  /** Crete atteinte pendant le passage en cours (cf. onSpeechEnd). */
+  private uttPeak = 0;
   /** Enveloppe lissée (attaque vive, retombée douce) — anime le visage. */
   private _level = 0;
 
@@ -177,6 +183,7 @@ export class LocalVad {
           this._speaking = true;
           this.startedMs = now;
           this.lastLoudMs = now;
+          this.uttPeak = peak;
           this.cb.onSpeechStart();
         }
       } else {
@@ -191,10 +198,11 @@ export class LocalVad {
       this._speaking = false;
       this.above = 0;
       this.floor = Math.max(FLOOR_MIN, peak);
-      this.cb.onSpeechEnd(this.lastLoudMs - this.startedMs);
+      this.cb.onSpeechEnd(this.lastLoudMs - this.startedMs, this.uttPeak);
       return;
     }
 
+    if (peak > this.uttPeak) this.uttPeak = peak;
     if (peak > offThreshold) {
       this.lastLoudMs = now;
       return;
@@ -204,6 +212,6 @@ export class LocalVad {
     this.above = 0;
     // La durée annoncée s'arrête au dernier son FORT, pas au bout de la rémanence :
     // sinon toute phrase paraîtrait 240 ms plus longue qu'elle ne l'a été.
-    this.cb.onSpeechEnd(this.lastLoudMs - this.startedMs);
+    this.cb.onSpeechEnd(this.lastLoudMs - this.startedMs, this.uttPeak);
   }
 }

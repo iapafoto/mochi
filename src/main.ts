@@ -114,6 +114,63 @@ const THINKING_MIN_TURN_MS = 700;
 /** Au bout de ce silence sans AUCUNE détection, on soupçonne la détection. */
 const SILENCE_ALERT_MS = 25000;
 
+// --- Calibration automatique du gain micro ------------------------------------
+//
+// « Il faut parler très près pour qu'il entende » a deux causes possibles, et
+// elles appellent des correctifs opposés (cf. MicCapture.setProcessing) :
+//   • une ATTÉNUATION — à 50 cm au lieu de 5, la voix arrive ~10× plus petite.
+//     C'est de la physique, rien n'est cassé, et le gain la rattrape exactement.
+//   • une PORTE DE BRUIT (`echoCancellation` → source VOICE_COMMUNICATION), qui
+//     EFFACE la parole lointaine. Là, le gain ne remonte que du souffle.
+//
+// Ce réglage traite le premier cas, tout seul, au lieu de demander à quelqu'un de
+// pousser un curseur en pleine conversation. Il ne peut rien pour le second — et
+// c'est pour ça que la ligne « micro : anti-écho … » est journalisée à
+// l'ouverture : elle dit lequel des deux on regarde.
+
+/** Crête visée pour une phrase. Confortable pour l'ASR, loin de la saturation. */
+const GAIN_TARGET_PEAK = 0.35;
+/** En dessous, on monte ; au-dessus, on descend. Large : on ne cherche pas à osciller. */
+const GAIN_LOW_PEAK = 0.15;
+const GAIN_HIGH_PEAK = 0.8;
+/** Phrases assez longues pour que leur crête veuille dire quelque chose. */
+const GAIN_MIN_TURN_MS = 600;
+/** Correction maximale accordee a UNE phrase (facteur, dans les deux sens). */
+const GAIN_MAX_STEP = 1.6;
+
+/** Gain courant, initialisé depuis le panneau (donc du localStorage). */
+let micGain = 1;
+
+/**
+ * Ajuste le gain d'après la crête d'une phrase RÉELLEMENT détectée.
+ *
+ * On ne corrige que d'un pas à la fois : la crête d'une seule phrase est bruitée
+ * (on n'articule pas deux fois pareil), et viser la valeur exacte du premier coup
+ * ferait pomper le gain d'un tour sur l'autre.
+ */
+function autoGain(peak: number, durationMs: number): void {
+  if (durationMs < GAIN_MIN_TURN_MS) return;
+  if (peak >= GAIN_LOW_PEAK && peak <= GAIN_HIGH_PEAK) return;
+  // Pas MULTIPLICATIF et non additif : l'écart à corriger est un rapport (une
+  // voix deux fois trop loin arrive deux fois plus petite), pas une différence.
+  // Par pas de +0,5 fixe, une voix très lointaine demandait huit phrases avant
+  // d'être audible — le temps d'abandonner. Plafonné à ×1,6 par phrase quand
+  // même : une seule crête est bruitée, on ne lui accorde pas toute la correction.
+  const wanted = micGain * (GAIN_TARGET_PEAK / Math.max(0.01, peak));
+  const bounded = Math.max(
+    1,
+    Math.min(8, Math.max(micGain / GAIN_MAX_STEP, Math.min(micGain * GAIN_MAX_STEP, wanted))),
+  );
+  // Arrondi au pas du curseur : sans lui, le panneau afficherait 2,5x pendant que
+  // la capture tournerait a 2,43x — deux verites pour un seul reglage.
+  const next = Math.round(bounded * 2) / 2;
+  if (next === micGain) return;
+  micGain = next;
+  panel.setMicGain(next);
+  live?.setMicGain(next);
+  panel.logLine(`🎚 gain micro → ${next.toFixed(1)}× (crête entendue ${peak.toFixed(3)})`);
+}
+
 const vad = new LocalVad({
   onSpeechStart: () => {
     // LA SOUPAPE : quelqu'un parle ⇒ on cesse immédiatement de fabriquer du
@@ -123,16 +180,18 @@ const vad = new LocalVad({
     lastHeardMs = Date.now();
     backchannel.start();
   },
-  onSpeechEnd: (durationMs) => {
+  onSpeechEnd: (durationMs, peak) => {
     backchannel.stop();
     lastHeardMs = Date.now();
-    // UNE ligne par phrase, avec les trois nombres qui décident. Sur un téléphone
-    // posé sur un robot il n'y a pas de console : « il ne réagit pas » se tranche
-    // ici, et nulle part ailleurs — crête sous le seuil, ou seuil parti trop haut.
+    // UNE ligne par phrase, avec les nombres qui décident. Sur un téléphone posé
+    // sur un robot il n'y a pas de console : « il ne m'entend qu'de près » se
+    // tranche ici, et nulle part ailleurs — c'est la crête qui dit à quel niveau
+    // ta voix arrive vraiment, et le seuil ce qu'il aurait fallu atteindre.
     const d = vad.debug();
     panel.logLine(
-      `👂 ${(durationMs / 1000).toFixed(1)} s (crête ${d.peak.toFixed(3)} · seuil ${d.onThreshold.toFixed(3)})`,
+      `👂 ${(durationMs / 1000).toFixed(1)} s (crête ${peak.toFixed(3)} · seuil ${d.onThreshold.toFixed(3)} · plancher ${d.floor.toFixed(3)})`,
     );
+    autoGain(peak, durationMs);
     // LE son qui comble le trou : joué ICI, à la fin de TA phrase, donc avant que
     // le modèle ait produit quoi que ce soit. C'est tout l'intérêt d'une détection
     // locale — la session, elle, n'a même pas encore décidé que ton tour est fini.
@@ -265,7 +324,12 @@ const panel = new DevPanel(panelRoot, {
     );
     void live?.setMicProcessing(on);
   },
-  onMicGainChange: (g) => live?.setMicGain(g),
+  // Le doigt reprend la main : la calibration automatique repart de CETTE valeur
+  // au lieu de la sienne, sinon la prochaine phrase entendue annulerait le geste.
+  onMicGainChange: (g) => {
+    micGain = g;
+    live?.setMicGain(g);
+  },
   onCalibrate: () => {
     // GARDE-FOU que la console n'a pas : la calibration coupe les moteurs et repasse
     // en IDLE pendant ~2 s. Lancée sur un robot DEBOUT, elle le fait tomber — et on
@@ -437,6 +501,10 @@ if (geminiKey) {
           : `⚠ 🔈 ${detail} — sur Android c'est le volume d'APPEL, donc faible`,
       ),
     onMicLevel: (peak, sending) => panel.setMicLevel(peak, sending),
+    // Ce que le navigateur applique VRAIMENT, pas ce que la case à cocher promet.
+    // `anti-écho OUI` est à lui seul l'explication d'un Mochi qui n'entend qu'à
+    // 5 cm — et rien d'autre dans l'app ne permettait de le constater.
+    onMicApplied: (summary) => panel.logLine(`🎙 ${summary}`),
     dispatch: (call) => {
       const res = dispatcher.dispatch(call);
       if (!res.ok) panel.logLine(`⚠ ${res.name}: ${res.detail}`);
@@ -458,7 +526,8 @@ panel.configureGeminiKey(hasStoredKey(), keySource);
 // coché au rechargement côté capture uniquement — l'écran dit une chose, le micro
 // en fait une autre, et on cherche pourquoi le réglage « ne marche pas ».
 void live?.setMicProcessing(panel.micProcessing);
-live?.setMicGain(panel.micGain);
+micGain = panel.micGain; // point de départ de la calibration automatique
+live?.setMicGain(micGain);
 
 // Éditeur de personnalité (seulement si l'agent gère un system prompt = Gemini).
 panel.configurePersona(!!agent.setPersona, agent.getPersona?.() ?? DEFAULT_PERSONA, DEFAULT_PERSONA);

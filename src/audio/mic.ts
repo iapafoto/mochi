@@ -36,6 +36,17 @@ export interface MicCallbacks {
    * ne pas avoir. Deux consommateurs, deux cadences.
    */
   onFrame?(peak: number): void;
+  /**
+   * Ce que le navigateur a RÉELLEMENT appliqué au flux, une fois ouvert.
+   *
+   * ⚠️ Les contraintes passées à `getUserMedia` sont un SOUHAIT, pas un fait : sur
+   * Android le pilote accorde ou refuse ce qu'il veut, en silence. Or c'est
+   * précisément `echoCancellation` qui décide si Mochi entend à 50 cm ou seulement
+   * à 5 (cf. setProcessing). Deviner ce réglage depuis l'état d'une case à cocher
+   * — qui vit dans le localStorage et survit à tout — c'est diagnostiquer à
+   * l'aveugle une panne dont c'est la cause n°1.
+   */
+  onApplied?(summary: string): void;
 }
 
 export class MicCapture {
@@ -144,6 +155,8 @@ export class MicCapture {
       return false;
     }
 
+    this.reportApplied();
+
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     // On demande 16 kHz ; si le navigateur impose un autre débit, le worklet
     // rééchantillonne quand même (il lit le `sampleRate` réel).
@@ -203,6 +216,32 @@ export class MicCapture {
     this.lastLevelMs = now;
     this.cb.onLevel(this.peakAcc / 32768, this._sending);
     this.peakAcc = 0;
+  }
+
+  /**
+   * Lit ce que la piste applique VRAIMENT et le remonte en clair. Les trois
+   * drapeaux d'abord — ce sont eux qui décident de la portée du micro.
+   */
+  private reportApplied(): void {
+    if (!this.cb.onApplied) return;
+    const track = this.stream?.getAudioTracks()[0];
+    if (!track) return;
+    const s = track.getSettings?.() as
+      | (MediaTrackSettings & {
+          echoCancellation?: boolean;
+          noiseSuppression?: boolean;
+          autoGainControl?: boolean;
+        })
+      | undefined;
+    if (!s) {
+      this.cb.onApplied('micro ouvert (réglages appliqués non lisibles)');
+      return;
+    }
+    const oui = (v: boolean | undefined) => (v === undefined ? '?' : v ? 'OUI' : 'non');
+    this.cb.onApplied(
+      `micro : anti-écho ${oui(s.echoCancellation)} · anti-bruit ${oui(s.noiseSuppression)} · ` +
+        `AGC ${oui(s.autoGainControl)} · ${s.sampleRate ?? '?'} Hz · gain logiciel ${this._gain}×`,
+    );
   }
 
   /** Paquet de zéros de la taille voulue, réutilisé (cf. setSilenced). */

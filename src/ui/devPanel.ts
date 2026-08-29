@@ -45,7 +45,19 @@ export interface DevPanelHandlers {
 /** Préférence mémorisée : capturer le zéro à chaque armement. */
 const ZERO_ON_ARM_KEY = 'mochi.zeroOnArm';
 
-/** Préférence mémorisée : traitement téléphonie du micro (défaut = actif). */
+/**
+ * Préférence mémorisée : traitement téléphonie du micro.
+ *
+ * ⚠️ DÉFAUT = INACTIF — l'absence de clé vaut « décoché » (cf. le `=== '1'` plus
+ * bas). Ce commentaire disait « défaut = actif », soit l'inverse exact du code
+ * qu'il documente, et sur le seul réglage qui décide de la PORTÉE du micro :
+ * coché, Mochi devient sourd au-delà de ~50 cm (cf. MicCapture.setProcessing).
+ *
+ * ⚠️ PERSISTANT : une fois cochée, la case le reste d'une session à l'autre —
+ * c'est donc la première chose à vérifier devant un « il n'entend que de très
+ * près ». Depuis le 29/08 le journal l'annonce à l'ouverture du micro, en lisant
+ * ce que la piste applique VRAIMENT plutôt que l'état de la case.
+ */
 const MIC_PROCESSING_KEY = 'mochi.micProcessing';
 
 /**
@@ -127,6 +139,9 @@ export class DevPanel {
   private zeroBtns: HTMLButtonElement[] = [];
   private zeroOnArmBox!: HTMLInputElement;
   private micProcessingBox!: HTMLInputElement;
+  private micGainInput!: HTMLInputElement;
+  private micGainLabel!: HTMLElement;
+  private fmtMicGain!: (v: number) => string;
   private autoStartBox!: HTMLInputElement;
   private micLevelEl!: HTMLSpanElement;
   /** Gain micro restauré du localStorage — lu par main.ts au démarrage. */
@@ -288,6 +303,9 @@ export class DevPanel {
     });
     gainRow.append(gainLabel, gain);
     this.micGain = gain0;
+    this.micGainInput = gain;
+    this.micGainLabel = gainLabel;
+    this.fmtMicGain = fmtGain;
 
     // Démarrage automatique au lancement (coché par défaut). Le changement ne
     // prend effet qu'au prochain chargement : décocher ne coupe pas la session en
@@ -588,6 +606,20 @@ export class DevPanel {
    * « ça capte fort, et c'est jeté » est l'information la plus utile du lot —
    * c'est le moment où Mochi parle et où il ne peut pas t'entendre, par choix.
    */
+  /**
+   * Règle le gain micro DEPUIS LE CODE (calibration automatique), curseur et
+   * libellé compris. Sans ça l'écran afficherait « 1× » pendant que la capture
+   * tourne à 4×, et le prochain glissement du doigt ramènerait brutalement le
+   * gain à la valeur affichée — en annulant la calibration sans prévenir.
+   */
+  setMicGain(g: number): void {
+    const v = Math.max(1, Math.min(8, Math.round(g * 2) / 2));
+    this.micGain = v;
+    this.micGainInput.value = String(v);
+    this.micGainLabel.textContent = this.fmtMicGain(v);
+    localStorage.setItem(MIC_GAIN_KEY, String(v));
+  }
+
   setMicLevel(peak: number, sending: boolean): void {
     const filled = Math.min(MIC_BARS, Math.round(peak * MIC_BARS * 1.6)); // 0,6 ≈ pleine échelle
     const bar = '█'.repeat(filled) + '·'.repeat(MIC_BARS - filled);

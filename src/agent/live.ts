@@ -84,6 +84,8 @@ export interface LiveConversationCallbacks {
   onMicLevel?(peak: number, sending: boolean): void;
   /** Niveau crête de chaque paquet (~40 ms), non lissé — pour la détection de parole. */
   onMicFrame?(peak: number): void;
+  /** Réglages RÉELLEMENT appliqués au micro par le navigateur (cf. MicCapture). */
+  onMicApplied?(summary: string): void;
   /** Un function call de Mochi → intention (visage/moteur). */
   dispatch(call: IntentCall): void;
 }
@@ -127,6 +129,7 @@ export class LiveConversation {
       onError: (m) => this.fail(m),
       onLevel: (peak, sending) => this.cb.onMicLevel?.(peak, sending),
       onFrame: (peak) => this.cb.onMicFrame?.(peak),
+      onApplied: (summary) => this.cb.onMicApplied?.(summary),
     });
     this.player.setPitch(DEFAULT_PITCH);
   }
