@@ -97,9 +97,13 @@ let live: LiveConversation | null = null;
 // Ce que Mochi fait PENDANT que tu parles, et dans les ~300 ms qui suivent — le
 // seul registre expressif qui ne passe ni par le réseau ni par le modèle, donc le
 // seul qui soit vraiment instantané. Cf. affect/backchannel.ts et audio/vad.ts.
-const backchannel = new Backchannel(face, {
-  playHum: () => sound.play('backchannel'),
-});
+const backchannel = new Backchannel(face);
+
+/**
+ * Dernière parole DÉTECTÉE (pas entendue par Gemini : vue par la détection
+ * locale). Sert au diagnostic de silence prolongé ci-dessous.
+ */
+let lastHeardMs = Date.now();
 
 /** Anti-répétition du « mmh ? » : il perdrait tout s'il tombait à chaque phrase. */
 let lastThinkingMs = 0;
@@ -107,10 +111,28 @@ const THINKING_COOLDOWN_MS = 6000;
 /** Une phrase plus courte que ça est un bruit, pas un tour de parole. */
 const THINKING_MIN_TURN_MS = 700;
 
+/** Au bout de ce silence sans AUCUNE détection, on soupçonne la détection. */
+const SILENCE_ALERT_MS = 25000;
+
 const vad = new LocalVad({
-  onSpeechStart: () => backchannel.start(),
+  onSpeechStart: () => {
+    // LA SOUPAPE : quelqu'un parle ⇒ on cesse immédiatement de fabriquer du
+    // silence, quel que soit le blip en cours. Un son de Mochi ne doit jamais
+    // avoir la priorité sur une vraie voix.
+    live?.ungateMic();
+    lastHeardMs = Date.now();
+    backchannel.start();
+  },
   onSpeechEnd: (durationMs) => {
     backchannel.stop();
+    lastHeardMs = Date.now();
+    // UNE ligne par phrase, avec les trois nombres qui décident. Sur un téléphone
+    // posé sur un robot il n'y a pas de console : « il ne réagit pas » se tranche
+    // ici, et nulle part ailleurs — crête sous le seuil, ou seuil parti trop haut.
+    const d = vad.debug();
+    panel.logLine(
+      `👂 ${(durationMs / 1000).toFixed(1)} s (crête ${d.peak.toFixed(3)} · seuil ${d.onThreshold.toFixed(3)})`,
+    );
     // LE son qui comble le trou : joué ICI, à la fin de TA phrase, donc avant que
     // le modèle ait produit quoi que ce soit. C'est tout l'intérêt d'une détection
     // locale — la session, elle, n'a même pas encore décidé que ton tour est fini.
@@ -383,8 +405,28 @@ if (geminiKey) {
     },
     onLevel: (lvl) => (voiceLevel = lvl),
     onMicFrame: (peak) => {
+      // ⚠️ ON N'ANALYSE PAS PENDANT QUE MOCHI PARLE. Le micro l'entend par le
+      // haut-parleur (l'envoi est coupé, pas la capture) : sans ce filtre il se
+      // détecterait lui-même, ouvrirait une écoute active sur sa propre voix, et
+      // le compteur de silence ci-dessous prendrait ses tirades pour un blanc.
+      if (flapTimer !== null) {
+        lastHeardMs = Date.now();
+        return;
+      }
       vad.push(peak);
-      backchannel.push(vad.level, vad.speakingForMs(), vad.pauseMs());
+      backchannel.push(vad.level);
+      // Diagnostic de la panne la plus vicieuse : la détection ne se déclenche
+      // JAMAIS (seuil trop haut, gain trop bas, micro pris par une autre appli).
+      // Elle est indiscernable d'un « il n'y a personne » — sauf à le dire.
+      const now = Date.now();
+      if (now - lastHeardMs > SILENCE_ALERT_MS) {
+        lastHeardMs = now;
+        const d = vad.debug();
+        panel.logLine(
+          `🔇 aucune parole détectée depuis ${SILENCE_ALERT_MS / 1000} s ` +
+            `(crête ${d.peak.toFixed(3)} · plancher ${d.floor.toFixed(3)} · seuil ${d.onThreshold.toFixed(3)})`,
+        );
+      }
     },
     // Le seul moyen de savoir, DEPUIS LE TÉLÉPHONE, pourquoi Mochi parle bas :
     // sur Android le repli sort au volume d'APPEL, et il ne se signale nulle part.

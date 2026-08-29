@@ -54,6 +54,18 @@ export const DEFAULT_PITCH = 1.3;
 const VAD_SILENCE_MS = 350;
 const VAD_PREFIX_MS = 50; // durée de parole avant de committer le début de tour
 
+/**
+ * Durée MAXIMALE d'un portillon micro, quel que soit le son joué.
+ *
+ * ⚠️ LE PORTILLON FABRIQUE DU SILENCE, ET LE SILENCE EST CE QUI TERMINE TON TOUR.
+ * Le serveur commite après VAD_SILENCE_MS de calme : un blip long (la tristesse
+ * fait 700 ms) qui tombe après une petite pause dans ta phrase produit assez de
+ * silence CONTINU pour que ta phrase soit coupée en deux — et Gemini répond alors
+ * à une demi-phrase. On plafonne donc bien en dessous du seuil, et la soupape
+ * `ungateMic` fait le reste dès que tu reparles.
+ */
+const MAX_GATE_MS = 220;
+
 export type LiveStatus = 'idle' | 'connecting' | 'listening' | 'speaking' | 'error';
 
 export interface LiveConversationCallbacks {
@@ -178,7 +190,20 @@ export class LiveConversation {
     this.gateTimer = window.setTimeout(() => {
       this.gateTimer = null;
       this.mic.setSilenced(false);
-    }, ms);
+    }, Math.min(ms, MAX_GATE_MS));
+  }
+
+  /**
+   * Rouvre le micro TOUT DE SUITE. C'est la soupape : dès que la détection locale
+   * entend quelqu'un, on arrête de fabriquer du silence, quel que soit le blip en
+   * cours. Un son de Mochi ne doit jamais avoir la priorité sur ta voix.
+   */
+  ungateMic(): void {
+    if (this.gateTimer !== null) {
+      window.clearTimeout(this.gateTimer);
+      this.gateTimer = null;
+    }
+    this.mic.setSilenced(false);
   }
 
   /** Construit un client Gemini : clé saisie sur l'appareil, ou jeton éphémère. */
@@ -249,10 +274,13 @@ export class LiveConversation {
     this.inBuf = this.outBuf = '';
     this.userFlushed = false;
     this.speaking = false;
-    if (this.gateTimer !== null) {
-      window.clearTimeout(this.gateTimer);
-      this.gateTimer = null;
-    }
+    // ⚠️ ROUVRIR LE MICRO, PAS SEULEMENT ANNULER LE MINUTEUR. `MicCapture` est la
+    // MÊME instance d'une session à l'autre : un portillon encore fermé quand la
+    // session tombe (changement de voix, réglage micro, erreur réseau — tous
+    // passent par ici) laissait le micro envoyer du silence POUR TOUJOURS. Aucun
+    // symptôme sauf un Mochi devenu subitement sourd, et la jauge d'entrée
+    // continuait de bouger, puisqu'elle mesure avant le portillon.
+    this.ungateMic();
     await this.mic.stop();
     await this.player.close();
     try {

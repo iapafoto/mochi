@@ -21,32 +21,27 @@ const BLINK_MIN_MS = 1200;
 const BLINK_MAX_MS = 2600;
 
 /**
- * Conditions du « mmh » AUDIBLE. Volontairement étroites, parce que ce son est le
- * seul de la famille à avoir un coût réel : le portillon micro remplace 200 ms de
- * ta phrase par du silence (cf. MicCapture.setSilenced). Dans une PAUSE c'est
- * gratuit — il n'y avait rien à garder ; au milieu d'un mot ça abîmerait la
- * transcription. D'où : seulement en pause, seulement sur un tour déjà long
- * (avant, personne ne ponctue), une seule fois par tour, et pas systématiquement.
+ * ⚠️ IL N'Y A PAS DE « MMH » AUDIBLE PENDANT QUE TU PARLES, ET IL NE FAUT PAS EN
+ * REMETTRE. La première version en jouait un dans les pauses, ce qui paraissait
+ * inoffensif — la pause était vide, il n'y avait rien à écraser. C'est faux, et
+ * l'arithmétique est implacable : un son joué micro ouvert doit être couvert par
+ * le portillon (sinon la VAD, en sensibilité haute, le prend pour de la parole et
+ * ouvre un tour), or le portillon envoie du SILENCE, et le silence est exactement
+ * ce qui termine ton tour. Pause de 220 ms + 210 ms de portillon = 430 ms de
+ * silence continu, pour un serveur qui commite à 350 : la phrase était coupée en
+ * deux et Gemini répondait à la première moitié. D'où « il comprend de travers ».
+ *
+ * Le backchannel reste donc PUREMENT VISUEL tant que tu parles. Le son, lui, a sa
+ * place à la FIN de ta phrase (le « mmh ? » de main.ts) : là, le silence
+ * supplémentaire ne coupe rien — il ne fait qu'avancer une fin déjà décidée.
  */
-const HUM_MIN_TURN_MS = 2500;
-const HUM_MIN_PAUSE_MS = 220;
-const HUM_CHANCE = 0.3;
-
-export interface BackchannelCallbacks {
-  /** Joue le petit « mmh » d'écoute (déjà porté par le portillon micro). */
-  playHum(): void;
-}
 
 export class Backchannel {
   private _active = false;
   private nextNodMs = 0;
   private nextBlinkMs = 0;
-  private hummedThisTurn = false;
 
-  constructor(
-    private readonly face: FaceState,
-    private readonly cb: BackchannelCallbacks,
-  ) {}
+  constructor(private readonly face: FaceState) {}
 
   /**
    * Vrai tant que Mochi écoute activement. La boucle d'humeur s'en sert pour ne
@@ -58,7 +53,6 @@ export class Backchannel {
 
   start(): void {
     this._active = true;
-    this.hummedThisTurn = false;
     const now = Date.now();
     this.nextNodMs = now + rand(NOD_MIN_MS, NOD_MAX_MS);
     this.nextBlinkMs = now + rand(BLINK_MIN_MS, BLINK_MAX_MS);
@@ -82,7 +76,7 @@ export class Backchannel {
    * Un paquet micro (~40 ms). `level` est l'enveloppe lissée de la VAD.
    * Ne fait rien si l'écoute n'est pas active.
    */
-  push(level: number, turnMs: number, pauseMs: number): void {
+  push(level: number): void {
     if (!this._active) return;
     const now = Date.now();
 
@@ -107,16 +101,6 @@ export class Backchannel {
     if (now >= this.nextNodMs) {
       this.nod();
       this.nextNodMs = now + rand(NOD_MIN_MS, NOD_MAX_MS);
-    }
-
-    if (
-      !this.hummedThisTurn &&
-      turnMs > HUM_MIN_TURN_MS &&
-      pauseMs > HUM_MIN_PAUSE_MS &&
-      Math.random() < HUM_CHANCE
-    ) {
-      this.hummedThisTurn = true;
-      this.cb.playHum();
     }
   }
 

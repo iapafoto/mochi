@@ -18,7 +18,6 @@ export type SoundName =
   | 'error'
   // --- Sons de CONVERSATION (joués pendant une session Live, cf. setVoiceMode) ---
   | 'thinking' // « mmh ? » — dès que tu te tais, AVANT que le modèle réponde
-  | 'backchannel' // « mmh » d'écoute, pendant que tu parles
   | 'fall' // il vient de tomber
   | 'recover'; // on vient de le relever
 
@@ -85,9 +84,6 @@ const PATTERNS: Record<SoundName, Blip[]> = {
   // entre la fin de ta phrase et le premier mot du modèle : il doit être bref
   // (il sera recouvert par la voix) et interrogatif (il annonce une réponse).
   thinking: [{ f0: PENTA[2], f1: PENTA[4], dur: 0.13, gain: 0.3, type: 'sine', vibrato: 6 }],
-  // Plat et DISCRET = « je t'écoute », pas « je réponds ». Joué pendant que TU
-  // parles : la moindre intonation ressemblerait à une interruption.
-  backchannel: [{ f0: PENTA[1], dur: 0.09, gain: 0.16, type: 'sine' }],
   // Descente longue = la chute. Deux voix qui glissent vers le grave.
   fall: [
     { f0: PENTA[4], f1: 220, dur: 0.5, gain: 0.45, type: 'triangle', vibrato: 9 },
