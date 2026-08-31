@@ -12,42 +12,26 @@ import { registerSW } from 'virtual:pwa-register';
  * que le port qui glisse de 5174 à 5175 (cf. vite.config.ts) : de son point de
  * vue tout va bien, et c'est bien ça qui coûte la demi-heure.
  *
- * D'où le réglage retenu : appliquer TOUT DE SUITE, mais jamais pendant que
- * Mochi est occupé. Un rechargement au milieu d'une conversation couperait la
- * session Live ET le lien BLE — Mochi qui s'éteint en pleine phrase.
+ * LA RÈGLE, ET ELLE TIENT EN UNE LIGNE : on applique dès que c'est disponible.
  *
- * Si l'occasion ne se présente jamais, on ne perd rien : le service worker en
- * attente s'activera de lui-même au prochain lancement à froid, ce qui est
- * exactement le rythme d'usage (le téléphone est posé sur Mochi le temps d'une
- * démo, puis l'app est refermée).
+ * ⚠️ IL Y AVAIT ICI TOUTE UNE MÉCANIQUE — un test « Mochi est-il occupé ? », une
+ * reprise toutes les 5 s, une échéance de forçage — pour éviter de recharger au
+ * milieu d'une phrase. Elle a produit exactement la panne qu'elle prétendait
+ * empêcher : le démarrage automatique ouvre la conversation dès le lancement,
+ * donc « occupé » était vrai en PERMANENCE, et un téléphone est resté bloqué
+ * trois versions en arrière sans que rien ne l'explique. La garde a coûté
+ * infiniment plus cher que ce qu'elle protégeait.
+ *
+ * Ce qu'elle protégeait, d'ailleurs, n'existe presque pas : le service worker
+ * signale la mise à jour dans les secondes qui suivent le chargement — donc au
+ * lancement, quand il ne se passe encore rien. Et si un rechargement tombe malgré
+ * tout pendant une démo, on perd deux secondes et l'app rouvre la conversation
+ * toute seule. C'est le rythme d'usage : le téléphone est posé sur Mochi le temps
+ * d'une démo, et on relance l'appli à ce moment-là.
  */
 export interface PwaHooks {
-  /** Mochi est-il en train de parler ou de rouler ? Si oui, on ne recharge pas. */
-  busy(): boolean;
   log(line: string): void;
 }
-
-/** Fréquence de la seconde chance quand la mise à jour est arrivée en pleine démo. */
-const RETRY_MS = 5000;
-
-/**
- * Délai au-delà duquel on applique la mise à jour MÊME SI Mochi paraît occupé.
- *
- * ⚠️ FILET CONTRE LA PANNE QU'ON VIENT DE SUBIR. `busy()` est une heuristique, et
- * une heuristique peut rester vraie pour toujours : le démarrage automatique
- * ouvrait la conversation dès le lancement, donc « occupé » ne redevenait jamais
- * faux, et un téléphone est resté bloqué TROIS versions en arrière sans que rien
- * ne l'explique. Le commentaire au-dessus pariait sur « le prochain lancement à
- * froid » — pari perdu : sur Android, refermer l'appli ne libère pas forcément le
- * client, et le service worker en attente attend encore.
- *
- * Corriger `busy()` était nécessaire mais pas suffisant : la prochaine condition
- * qu'on oubliera de relâcher produirait la même panne muette. Une échéance ferme,
- * elle, garantit qu'aucune version ne peut rester coincée — au pire on recharge à
- * un moment un peu impoli, ce qui est infiniment moins grave que de tester
- * pendant une heure un correctif qui n'est pas là.
- */
-const FORCE_AFTER_MS = 120000;
 
 export function setupPwa(hooks: PwaHooks): void {
   // Pas de service worker en dev (cf. `devOptions` dans vite.config.ts). On sort
@@ -59,15 +43,10 @@ export function setupPwa(hooks: PwaHooks): void {
 
   void requestPersistentStorage(hooks.log);
 
-  let pending = false;
-  let announced = false;
-  let pendingSince = 0;
-
   const updateSW = registerSW({
     onNeedRefresh() {
-      pending = true;
-      pendingSince = Date.now();
-      tryApply();
+      hooks.log('⬆ mise à jour : rechargement…');
+      void updateSW(true); // skipWaiting + reload
     },
     onOfflineReady() {
       hooks.log('📦 app en cache — elle démarrera même sans réseau');
@@ -76,24 +55,6 @@ export function setupPwa(hooks: PwaHooks): void {
       hooks.log(`⚠ service worker non enregistré : ${(err as Error).message}`);
     },
   });
-
-  function tryApply(): void {
-    if (!pending) return;
-    const forced = Date.now() - pendingSince >= FORCE_AFTER_MS;
-    if (hooks.busy() && !forced) {
-      // Une SEULE annonce, puis on retente en silence : répéter la ligne toutes
-      // les 5 s noierait le journal pendant toute la démo.
-      if (!announced) {
-        announced = true;
-        hooks.log('⬆ mise à jour prête — elle s\'appliquera dès que Mochi sera au repos');
-      }
-      setTimeout(tryApply, RETRY_MS);
-      return;
-    }
-    pending = false;
-    hooks.log(forced ? '⬆ mise à jour forcée après 2 min : rechargement…' : '⬆ mise à jour : rechargement…');
-    void updateSW(true); // skipWaiting + reload
-  }
 }
 
 /**
