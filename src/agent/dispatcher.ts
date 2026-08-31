@@ -39,12 +39,25 @@ const MOVING_INTENTS = new Set([
 ]);
 
 /**
- * Plafonds d'un trace. Le second est le seul qui protege vraiment : une spirale de
- * 40 cm d'encombrement peut faire cinq metres de chemin, et c'est la distance
- * ROULEE qui decide si le robot quitte la table.
+ * Plafonds d'un tracé. Ce sont des garde-fous contre l'ABSURDE, pas contre le long.
+ *
+ * ⚠️ ILS ÉTAIENT À 3 m, AVEC UN MAUVAIS ARGUMENT : « il pourrait tomber de la
+ * table ». Ça ne tient pas — le risque est au mètre parcouru, pas au total, et un
+ * tracé de 2,9 m tombe exactement aussi bien qu'un de dix. Ce qui protège, c'est
+ * de pouvoir INTERROMPRE : l'intention `stop`, le bouton du panneau, l'annulation
+ * automatique s'il tombe, et le TTL homme-mort qui l'arrête en 300 ms si le lien
+ * lâche. Tout ça existe, donc la longueur n'a plus à être rationnée.
+ *
+ * Ce qui reste à attraper, c'est l'emballement : un `d` où le modèle n'a pas vu ce
+ * qu'il demandait (une spirale de cinquante tours tient dans 40 cm et fait
+ * soixante mètres). Les valeurs sont donc larges — elles ne doivent JAMAIS refuser
+ * une figure qu'un humain aurait voulue, seulement une qui n'a manifestement pas
+ * été voulue. La durée est le second filet, pour un tracé court mais si tortueux
+ * qu'il se parcourt au ralenti.
  */
-const PATH_MAX_SIZE_CM = 120;
-const PATH_MAX_LENGTH_MM = 3000;
+const PATH_MAX_SIZE_CM = 200;
+const PATH_MAX_LENGTH_MM = 15000;
+const PATH_MAX_DURATION_MS = 120000;
 
 /**
  * Route un IntentCall vers le visage, le son et/ou le transport.
@@ -176,15 +189,21 @@ export class Dispatcher {
             maxTurnDegS: MAX_TURN_DEG_S,
             refreshHz: REFRESH_HZ,
           });
-          // ⚠️ LE PLAFOND PORTE SUR LA LONGUEUR PARCOURUE, pas sur la taille
-          // demandée. Une spirale de 40 cm d'encombrement fait plusieurs mètres de
-          // tracé : c'est la distance roulée qui décide si on tombe de la table,
-          // et elle ne se lit pas dans le `size_cm`.
+          // Les deux garde-fous portent sur le tracé RÉEL, pas sur `size_cm` :
+          // l'encombrement demandé ne dit rien de la distance parcourue ni du temps
+          // passé, et ce sont eux qui trahissent un `d` que personne n'a voulu.
           if (plan.lengthMm > PATH_MAX_LENGTH_MM) {
             return {
               name: call.name,
               ok: false,
-              detail: `tracé trop long (${Math.round(plan.lengthMm / 10)} cm pour ${PATH_MAX_LENGTH_MM / 10} cm max)`,
+              detail: `tracé démesuré (${Math.round(plan.lengthMm / 100)} m pour ${PATH_MAX_LENGTH_MM / 1000} m max) — le chemin est sûrement plus compliqué que prévu`,
+            };
+          }
+          if (plan.durationMs > PATH_MAX_DURATION_MS) {
+            return {
+              name: call.name,
+              ok: false,
+              detail: `tracé trop lent (${Math.round(plan.durationMs / 1000)} s pour ${PATH_MAX_DURATION_MS / 1000} s max) — trop de virages serrés`,
             };
           }
           this.sound.play('move');

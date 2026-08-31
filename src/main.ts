@@ -608,6 +608,14 @@ const WHIMPER_PERIOD_MS = 6000;
 
 function reactToState(previous: RobotStateValue, next: RobotStateValue): void {
   if (next === RobotState.FALLEN) {
+    // ⚠️ TOMBER ANNULE CE QUI ÉTAIT EN COURS, et personne d'autre ne le fait.
+    // OP_DRIVE, contrairement à OP_FORWARD, n'est PAS refusé hors équilibre côté
+    // firmware : un tracé continuait donc de s'écouler pendant qu'il était couché,
+    // moteurs coupés — donc sans que rien ne se voie. Le robot repartait au MILIEU
+    // du chemin à la seconde où on le relevait, ce qui est la pire façon
+    // d'apprendre qu'un ordre avait survécu.
+    driveLoop.stop();
+    moveQueue.clear();
     express(face, 'sadness', 0.9);
     sound.play('fall');
     emotes.spawn('rain');

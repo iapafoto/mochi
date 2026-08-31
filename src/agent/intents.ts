@@ -201,8 +201,11 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
         size_cm: {
           type: 'integer',
           minimum: 20,
-          maximum: 120,
-          description: 'Taille de la forme au sol : sa plus grande dimension, en cm. Défaut 50.',
+          maximum: 200,
+          description:
+            'Taille de la forme au sol : sa plus grande dimension, en cm. Défaut 50. '
+            + "Vois grand si on te demande une grande figure — la longueur du tracé n'est pas rationnée, "
+            + "on peut t'arrêter à tout moment.",
         },
         speed: {
           type: 'string',
