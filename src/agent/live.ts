@@ -258,8 +258,18 @@ export class LiveConversation {
         callbacks: {
           onmessage: (m) => this.handle(m),
           onerror: (e) => this.fail(e.message || 'erreur de session'),
-          onclose: () => {
-            if (!this.stopping && this.session) void this.teardown('idle');
+          // ⚠️ UNE SESSION QUI MEURT TOUTE SEULE DOIT LE DIRE. Ce cas-ci n'est PAS
+          // un arrêt volontaire : le serveur a fermé la socket (durée de session
+          // épuisée, quota, réseau). On tombait alors en `idle`, dont le libellé
+          // est la chaîne VIDE — donc écran muet, micro coupé, et un Mochi
+          // subitement sourd sans le moindre mot d'explication. Indiscernable
+          // d'un arrêt demandé, et c'est exactement ce qu'on prend pour de la
+          // surdité. `code`/`reason` sont la seule chose que le serveur nous dise
+          // sur le pourquoi : on les remonte tels quels dans le journal.
+          onclose: (e) => {
+            if (this.stopping || !this.session) return;
+            const why = [e?.code, (e?.reason ?? '').trim()].filter(Boolean).join(' ');
+            void this.teardown('error', `session fermée par le serveur${why ? ` (${why})` : ''}`);
           },
         },
         config: {

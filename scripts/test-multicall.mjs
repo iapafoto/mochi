@@ -54,9 +54,9 @@ const SYS = `${buildSystemInstruction(DEFAULT_PERSONA)}
 // ⚠️ CE QUE CE BANC PEUT ET NE PEUT PAS DIRE. Il interroge le modele de TEXTE, seul
 // joignable par generateContent ; le vrai chemin est le modele Live, qui a son
 // propre comportement d'appel d'outils. Un echec ici merite d'etre regarde, un
-// succes ne prouve rien sur la conversation reelle. Et le free tier plafonne a
-// 5 requetes/minute : la liste reste donc COURTE, sur les seuls cas ou une
-// regression serait invisible autrement.
+// succes ne prouve rien sur la conversation reelle. Et le free tier est limite au
+// tour par minute ET au tour par jour : la liste reste donc COURTE, sur les seuls
+// cas ou une regression serait invisible autrement.
 const CAS = [
   // [demande, fonction attendue, nombre d'appels attendus]
   // Les deux fusions : une distance signee, et un enum de gestes.
@@ -67,9 +67,17 @@ const CAS = [
   ['Hoche la tete, puis fais une reverence.', 'gesture', 2],
 ];
 
-// ⚠️ CADENCE IMPOSEE PAR LE FREE TIER : 5 requetes/minute sur gemini-2.5-flash.
-// Sans pause, la moitie du banc revient en 429 et on lit un quota epuise comme un
-// echec du modele — exactement le genre de faux diagnostic qu'un banc doit eviter.
+// ⚠️ CADENCE VOLONTAIREMENT PRUDENTE. Le plafond exact du free tier bouge avec les
+// ajustements de Google (la doc annonce 15 requetes/minute pour la famille Flash,
+// plus un plafond journalier) : on ne le code donc pas en dur, on reste largement
+// dessous. 13 s = ~4,6 requetes/minute, sur la bonne rive quel que soit le chiffre
+// du jour. Sans pause, la moitie du banc revient en 429 et on lit un quota epuise
+// comme un echec du modele — le faux diagnostic qu'un banc doit rendre impossible.
+//
+// ⚠️ ET CE PLAFOND-LA NE CONCERNE QUE CE BANC. Il interroge generateContent, une
+// requete HTTP par cas. Le vrai Mochi parle par ai.live.connect : UNE socket
+// ouverte, et chaque phrase y transite sans etre une requete de plus. Un quota
+// « par requete » ne peut donc pas expliquer un silence en pleine conversation.
 const PAUSE_MS = 13000;
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
 
