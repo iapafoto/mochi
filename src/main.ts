@@ -16,7 +16,7 @@ import { createAgent } from './agent/agent';
 import { LiveConversation } from './agent/live';
 import { loadGeminiKey, saveGeminiKey, hasStoredKey } from './agent/apiKey';
 import { setupPwa } from './pwa';
-import { DEFAULT_PERSONA, buildSystemInstruction } from './agent/persona';
+import { DEFAULT_PERSONA, buildSystemInstruction, bodyLine } from './agent/persona';
 import { EmoteLayer } from './fx/emotes';
 import { MoodEngine, ambientFromMood, restingFaceFromMood } from './affect/mood';
 import { LocalVad } from './audio/vad';
@@ -586,6 +586,7 @@ transport.onConnectionChange((connected) => {
   panel.setConnected(connected);
   if (connected) {
     panel.logLine('🤖 connecté — pense à ARMER (le robot boote désarmé)');
+    notifyBody('ton corps vient de se connecter');
     keepAwake();
     return;
   }
@@ -594,6 +595,7 @@ transport.onConnectionChange((connected) => {
   // dans le vide et remplisse le journal de « non émis ».
   moveQueue.clear();
   driveLoop.stop();
+  notifyBody('ton corps vient de se déconnecter : tu n’es plus qu’une voix dans le téléphone');
   panel.logLine('⚠ robot déconnecté — reprise automatique en cours');
 });
 
@@ -683,6 +685,7 @@ function reactToState(previous: RobotStateValue, next: RobotStateValue): void {
     emotes.spawn('rain');
     mood.nudge(-0.6, -0.15);
     lastWhimperMs = Date.now();
+    notifyBody('tu viens de tomber, tu es couché sur le côté');
     panel.logLine('💔 il est tombé…');
     return;
   }
@@ -695,6 +698,7 @@ function reactToState(previous: RobotStateValue, next: RobotStateValue): void {
     sound.play('recover');
     emotes.spawn('sparkles');
     mood.nudge(0.7, 0.3);
+    notifyBody('on vient de te relever, tu es de nouveau debout en équilibre');
     panel.logLine('✨ le revoilà debout !');
   }
 }
@@ -779,8 +783,34 @@ function captureZero(okMessage: string): void {
 function startLive(): void {
   if (!live || live.active) return;
   void sound.unlock();
-  // Le persona courant devient la voix/le caractère de la session.
-  void live.start(buildSystemInstruction(agent.getPersona?.() ?? DEFAULT_PERSONA));
+  // Le persona courant devient la voix/le caractère de la session. On y accroche
+  // l'état du corps À CET INSTANT : sans ça, il démarre en récitant son caractère
+  // (« je me rattrape sur mes roues ») alors qu'il n'est peut-être relié à rien.
+  const sys = `${buildSystemInstruction(agent.getPersona?.() ?? DEFAULT_PERSONA)}\n\nÀ cet instant : ${bodyLine(
+    transport.connected,
+    bodyPosture(),
+  )}.`;
+  void live.start(sys);
+}
+
+/** Posture connue du corps, dans les mots du personnage (null = pas de télémétrie). */
+function bodyPosture(): 'debout' | 'couché' | 'au repos' | null {
+  if (!lastTelemetry) return null;
+  if (lastTelemetry.state === RobotState.FALLEN) return 'couché';
+  if (lastTelemetry.state === RobotState.BALANCING) return 'debout';
+  return 'au repos';
+}
+
+/**
+ * Prévient le modèle d'un changement du monde réel, une fois seulement par
+ * transition. Silencieux si aucune conversation n'est ouverte : il n'y a personne
+ * à qui le dire, et l'état sera de toute façon dans le prompt à l'ouverture.
+ */
+let lastBodyNotice = '';
+function notifyBody(text: string): void {
+  if (!live?.active || text === lastBodyNotice) return;
+  lastBodyNotice = text;
+  live.notify(text);
 }
 
 /**

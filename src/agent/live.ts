@@ -299,6 +299,25 @@ export class LiveConversation {
     await this.teardown('idle');
   }
 
+  /**
+   * Dit au modèle ce qui vient de changer dans le monde réel — canal de « régie ».
+   *
+   * ⚠️ CE N'EST PAS UN FAUX TOUR DE L'UTILISATEUR, et la distinction compte. Écrit
+   * tel quel (« dis que ton corps est débranché »), le modèle répondrait à la
+   * CONSIGNE au lieu de l'exécuter : « d'accord, je le dis ! ». Encadré par [[ ]]
+   * et déclaré comme didascalie dans les règles, il le vit à la place.
+   *
+   * `turnComplete: true` : on VEUT qu'il réagisse. Une connexion qui apparaît ou
+   * disparaît est exactement le genre d'événement qu'un être vivant commente.
+   */
+  notify(text: string): void {
+    if (!this.session) return;
+    this.session.sendClientContent({
+      turns: [{ role: 'user', parts: [{ text: `[[${text}]]` }] }],
+      turnComplete: true,
+    });
+  }
+
   /** Réflexe local « stop » : coupe la voix immédiatement, sans passer par le cloud. */
   stopReflex(): void {
     this.player.clear();
