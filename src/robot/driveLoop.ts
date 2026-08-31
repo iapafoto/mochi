@@ -9,7 +9,7 @@ import type { Transport } from './transport';
 import { Op } from './transport';
 
 /** Cadence de réémission (Hz) — celle du pad du banc. */
-const REFRESH_HZ = 10;
+export const REFRESH_HZ = 10;
 
 /**
  * TTL envoyé au robot. À 3 périodes, deux notifications perdues d'affilée ne
@@ -26,8 +26,8 @@ const TTL_MS = 300;
  * constantes MENTENT et le rayon dérive d'autant. Les déplacements droits passent
  * eux par OP_FORWARD/OP_TURN, en cm et degrés absolus — immunisés, eux.
  */
-const MAX_SPEED_MM_S = 300;
-const MAX_TURN_DEG_S = 120;
+export const MAX_SPEED_MM_S = 300;
+export const MAX_TURN_DEG_S = 120;
 
 /** Expo appliqué à la direction côté firmware (config.h : TELEOP_STEER_EXPO). */
 const STEER_EXPO = 0.5;
@@ -168,6 +168,9 @@ export class DriveLoop {
   private k = 0;
   /** true = phase de ralentissement, en attente du zéro. */
   private closing = false;
+  /** Programme en cours (cf. runProgram), ou null pour une consigne tenue. */
+  private program: DriveVector[] | null = null;
+  private frame = 0;
 
   constructor(
     private readonly transport: Transport,
@@ -179,8 +182,33 @@ export class DriveLoop {
     return this.timer !== null;
   }
 
+  /**
+   * Joue un PROGRAMME : une consigne par période, préparée à l'avance (cf.
+   * pathPlan). Remplace toute trajectoire en cours, comme `run`.
+   *
+   * ⚠️ AUCUNE RAMPE ICI, ET C'EST VOULU. Celle de `run` existe parce qu'une
+   * consigne constante démarre par un échelon ; un programme, lui, arrive déjà
+   * limité en accélération d'un bout à l'autre — il part de zéro et y revient. Lui
+   * appliquer la rampe par-dessus étirerait le temps sans que le chemin le sache,
+   * et la forme dériverait d'autant.
+   */
+  runProgram(frames: DriveVector[]): void {
+    if (frames.length === 0) return;
+    this.clearTimer();
+    this.program = frames;
+    this.frame = 0;
+    this.target = { speedMmS: 0, turnDegS: 0 };
+    this.k = 1; // pas de rampe : le programme s'en charge
+    this.closing = false;
+    this.tick();
+    if (this.timer === null) {
+      this.timer = window.setInterval(() => this.tick(), 1000 / REFRESH_HZ);
+    }
+  }
+
   /** Lance (ou remplace) une trajectoire. */
   run(vec: DriveVector, durationMs: number): void {
+    this.program = null;
     this.target = vec;
     this.closing = false;
     this.endAt = Date.now() + Math.max(0, durationMs);
@@ -203,6 +231,11 @@ export class DriveLoop {
   }
 
   private clearTimer(): boolean {
+    // Le programme s'oublie ICI, donc sur TOUS les chemins d'arrêt — `stop()`, la
+    // fin normale, une nouvelle trajectoire. Le laisser derrière ferait repartir un
+    // chemin abandonné à la prochaine consigne, ce qui est exactement ce qu'un
+    // bouton d'arrêt est censé rendre impossible.
+    this.program = null;
     if (this.timer === null) return false;
     window.clearInterval(this.timer);
     this.timer = null;
@@ -211,6 +244,19 @@ export class DriveLoop {
   }
 
   private tick(): void {
+    // Programme : on déroule les consignes préparées, une par période.
+    if (this.program) {
+      if (this.frame >= this.program.length) {
+        this.clearTimer();
+        this.program = null;
+        this.transport.sendIntent(Op.DRIVE, 0, 0, TTL_MS);
+        this.onEnd?.(true);
+        return;
+      }
+      this.emit(this.program[this.frame++]);
+      return;
+    }
+
     // Échéance atteinte : on ne coupe pas net, on redescend par la même rampe. Un
     // robot lancé à 300 mm/s à qui on demande zéro d'un bloc doit se pencher en
     // arrière pour freiner — c'est le symétrique exact du départ en butée.
@@ -226,8 +272,17 @@ export class DriveLoop {
       return;
     }
 
-    const pctV = ((this.target.speedMmS * this.k) / MAX_SPEED_MM_S) * 100;
-    const pctW = unExpo((this.target.turnDegS * this.k) / MAX_TURN_DEG_S) * 100;
+    this.emit({ speedMmS: this.target.speedMmS * this.k, turnDegS: this.target.turnDegS * this.k });
+  }
+
+  /**
+   * Convertit une consigne physique en message et l'émet. Un seul endroit fait
+   * cette conversion — l'inverse de l'expo comprise — pour que la consigne tenue
+   * et le programme parlent exactement le même langage au robot.
+   */
+  private emit(vec: DriveVector): void {
+    const pctV = (vec.speedMmS / MAX_SPEED_MM_S) * 100;
+    const pctW = unExpo(vec.turnDegS / MAX_TURN_DEG_S) * 100;
     this.transport.sendIntent(Op.DRIVE, Math.round(pctV), Math.round(pctW), TTL_MS);
   }
 }

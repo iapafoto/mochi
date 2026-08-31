@@ -180,6 +180,40 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'path',
+    description:
+      "DÉPLACEMENT RÉEL : trace une FORME au sol, d'un seul mouvement fluide, décrite par un chemin "
+      + "SVG. C'est ce qu'il faut pour un huit, une spirale, un cœur, un zigzag, une boucle — tout ce "
+      + "qu'une suite d'avances et de virages rendrait saccadé. "
+      + "La forme est tracée DEPUIS l'endroit où il se trouve et DANS LA DIRECTION où il regarde : le "
+      + "point de départ du chemin et son orientation n'ont pas d'importance, seule compte la forme. "
+      + "Dans le dessin, le haut = devant lui. À n'appeler que si on demande de bouger ou de faire un numéro.",
+    parameters: {
+      type: 'object',
+      properties: {
+        d: {
+          type: 'string',
+          description:
+            "Chemin SVG (attribut d). Commandes acceptées : M L H V C S Q T A Z, absolues ou relatives. "
+            + "Exemples : un carré « M0,0 L100,0 L100,100 L0,100 Z » ; un huit "
+            + "« M50,0 C100,0 100,50 50,50 C0,50 0,100 50,100 » ; une vague « M0,0 q25,-40 50,0 t50,0 ».",
+        },
+        size_cm: {
+          type: 'integer',
+          minimum: 20,
+          maximum: 120,
+          description: 'Taille de la forme au sol : sa plus grande dimension, en cm. Défaut 50.',
+        },
+        speed: {
+          type: 'string',
+          enum: ['slow', 'normal', 'fast'],
+          description: "Allure du tracé. normal par défaut ; fast pour frimer, slow pour être précis.",
+        },
+      },
+      required: ['d'],
+    },
+  },
+  {
     name: 'nod',
     description: 'DÉPLACEMENT RÉEL : hoche la tête (oui) en basculant sur ses roues.',
   },

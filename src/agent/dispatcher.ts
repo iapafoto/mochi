@@ -7,12 +7,17 @@ import {
   DriveLoop,
   circleDrive,
   CIRCLE_SPEEDS,
+  MAX_SPEED_MM_S,
+  MAX_TURN_DEG_S,
+  REFRESH_HZ,
   MOVE_SPEEDS,
   moveSpeedFromArousal,
   type CircleSpeed,
   type MoveSpeed,
 } from '../robot/driveLoop';
 import type { MoveQueue } from '../robot/moveQueue';
+import { parseSvgPath, scaleAndResample } from '../robot/svgPath';
+import { planPath, PATH_DS_MM } from '../robot/pathPlan';
 import type { IntentCall } from './intents';
 import type { MoodEngine } from '../affect/mood';
 import type { EmoteLayer, EmoteKind } from '../fx/emotes';
@@ -29,7 +34,17 @@ export interface DispatchResult {
  * Les intentions qui font ROULER le robot. Même liste que la famille DÉPLACEMENT
  * décrite à Gemini dans intents.ts — si l'une des deux bouge, l'autre aussi.
  */
-const MOVING_INTENTS = new Set(['forward', 'backward', 'turn', 'circle', 'nod', 'bow', 'wiggle']);
+const MOVING_INTENTS = new Set([
+  'forward', 'backward', 'turn', 'circle', 'path', 'nod', 'bow', 'wiggle',
+]);
+
+/**
+ * Plafonds d'un trace. Le second est le seul qui protege vraiment : une spirale de
+ * 40 cm d'encombrement peut faire cinq metres de chemin, et c'est la distance
+ * ROULEE qui decide si le robot quitte la table.
+ */
+const PATH_MAX_SIZE_CM = 120;
+const PATH_MAX_LENGTH_MM = 3000;
 
 /**
  * Route un IntentCall vers le visage, le son et/ou le transport.
@@ -146,6 +161,46 @@ export class Dispatcher {
             `(${Math.round(vec.speedMmS)} mm/s, ${Math.round(Math.abs(vec.turnDegS))} °/s, ` +
             `${(durationMs / 1000).toFixed(1)} s)`,
         );
+      }
+      case 'path': {
+        if (!this.drive) return { name: call.name, ok: false, detail: 'pas de pilote de trajectoire' };
+        try {
+          const sizeCm = Math.max(20, Math.min(PATH_MAX_SIZE_CM, int(a.size_cm) || 50));
+          const speed: CircleSpeed = String(a.speed) in CIRCLE_SPEEDS
+            ? (a.speed as CircleSpeed)
+            : 'normal';
+          const flat = parseSvgPath(String(a.d ?? ''));
+          const points = scaleAndResample(flat, sizeCm * 10, PATH_DS_MM);
+          const plan = planPath(points, {
+            cruiseMmS: MAX_SPEED_MM_S * CIRCLE_SPEEDS[speed],
+            maxTurnDegS: MAX_TURN_DEG_S,
+            refreshHz: REFRESH_HZ,
+          });
+          // ⚠️ LE PLAFOND PORTE SUR LA LONGUEUR PARCOURUE, pas sur la taille
+          // demandée. Une spirale de 40 cm d'encombrement fait plusieurs mètres de
+          // tracé : c'est la distance roulée qui décide si on tombe de la table,
+          // et elle ne se lit pas dans le `size_cm`.
+          if (plan.lengthMm > PATH_MAX_LENGTH_MM) {
+            return {
+              name: call.name,
+              ok: false,
+              detail: `tracé trop long (${Math.round(plan.lengthMm / 10)} cm pour ${PATH_MAX_LENGTH_MM / 10} cm max)`,
+            };
+          }
+          this.sound.play('move');
+          this.moves?.clear();
+          this.drive.runProgram(plan.frames);
+          return ok(
+            call.name,
+            `${Math.round(plan.lengthMm / 10)} cm en ${(plan.durationMs / 1000).toFixed(1)} s ` +
+              `(${speed}, ${Math.round(plan.topSpeedMmS)} mm/s, rayon min ` +
+              `${Number.isFinite(plan.minRadiusMm) ? Math.round(plan.minRadiusMm) + ' mm' : 'droit'})`,
+          );
+        } catch (e) {
+          // Un `d` mal formé est une erreur du MODÈLE, pas une panne : on la lui
+          // rend en clair plutôt que de tracer une forme fausse en silence.
+          return { name: call.name, ok: false, detail: `chemin illisible : ${(e as Error).message}` };
+        }
       }
       case 'nod':
         this.transport.sendIntent(Op.NOD);
