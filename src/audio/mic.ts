@@ -57,6 +57,7 @@ export class MicCapture {
   private _active = false;
   private _sending = true;
   private _silenced = false; // cf. setSilenced : on envoie, mais du vide
+  private blindUntilMs = 0;  // cf. setSilenced : la detection ne voit rien jusque-la
   private zeros: Int16Array | null = null;
   private _processing = false; // cf. setProcessing : mesuré au banc le 23/08
   private _gain = 1;
@@ -133,8 +134,16 @@ export class MicCapture {
    * Envoyer du silence, lui, dit la vérité — il n'y a effectivement personne qui
    * parle pendant ces 150 ms.
    */
-  setSilenced(on: boolean): void {
+  setSilenced(on: boolean, blindMs = 0): void {
     this._silenced = on;
+    // ⚠️ AVEUGLEMENT ET MUTISME SONT DEUX DURÉES DIFFÉRENTES, et les confondre a
+    // rendu inopérante la seule sécurité qui protégeait ta phrase. Il faut couper
+    // `onFrame` pendant que le blip SONNE (sinon la détection prend le « mmh ? »
+    // de Mochi pour ta voix), mais il faut la RENDRE VOYANTE dès qu'il s'est tu —
+    // c'est elle qui déclenche `ungateMic` si tu reprends la parole. En la laissant
+    // aveugle toute la durée du portillon, la soupape ne pouvait jamais s'armer :
+    // tes mots repris étaient remplacés par du silence jusqu'au bout.
+    this.blindUntilMs = on ? Date.now() + blindMs : 0;
   }
 
   async start(): Promise<boolean> {
@@ -208,7 +217,7 @@ export class MicCapture {
     // Paquet par paquet, avant tout lissage : c'est ce que lit la détection de
     // parole. Muet pendant un blip, parce que le micro, lui, ENTEND le blip —
     // sans ce garde-fou Mochi prendrait son propre « mmh ? » pour ta réponse.
-    if (!this._silenced) this.cb.onFrame?.(peak / 32768);
+    if (Date.now() >= this.blindUntilMs) this.cb.onFrame?.(peak / 32768);
     if (!this.cb.onLevel) return;
     if (peak > this.peakAcc) this.peakAcc = peak;
     const now = Date.now();

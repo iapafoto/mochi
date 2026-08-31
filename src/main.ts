@@ -138,6 +138,20 @@ const GAIN_MIN_TURN_MS = 600;
 /** Correction maximale accordee a UNE phrase (facteur, dans les deux sens). */
 const GAIN_MAX_STEP = 1.6;
 
+/**
+ * Gain maximal que la calibration s'autorise — DÉLIBÉRÉMENT sous le maximum du
+ * curseur (8×), qui reste disponible à la main.
+ *
+ * ⚠️ MONTER LE GAIN NE RÉSOUT QU'UNE CHOSE, ET EN ABÎME UNE AUTRE. Il rattrape une
+ * atténuation (la distance), mais il n'améliore AUCUN rapport signal/bruit : le
+ * souffle monte avec la voix. Et au-delà d'un certain point, le worklet borne à
+ * ±1 — donc écrêtage et distorsion, c'est-à-dire « il entend plus souvent mais
+ * comprend moins bien ». Une boucle automatique qui n'a personne pour l'arrêter
+ * doit donc s'interdire cette zone : c'est un réglage qu'un humain peut décider
+ * de pousser en connaissance de cause, pas une machine à l'aveugle.
+ */
+const GAIN_AUTO_MAX = 4;
+
 /** Gain courant, initialisé depuis le panneau (donc du localStorage). */
 let micGain = 1;
 
@@ -159,7 +173,10 @@ function autoGain(peak: number, durationMs: number): void {
   const wanted = micGain * (GAIN_TARGET_PEAK / Math.max(0.01, peak));
   const bounded = Math.max(
     1,
-    Math.min(8, Math.max(micGain / GAIN_MAX_STEP, Math.min(micGain * GAIN_MAX_STEP, wanted))),
+    Math.min(
+      GAIN_AUTO_MAX,
+      Math.max(micGain / GAIN_MAX_STEP, Math.min(micGain * GAIN_MAX_STEP, wanted)),
+    ),
   );
   // Arrondi au pas du curseur : sans lui, le panneau afficherait 2,5x pendant que
   // la capture tournerait a 2,43x — deux verites pour un seul reglage.
@@ -168,7 +185,11 @@ function autoGain(peak: number, durationMs: number): void {
   micGain = next;
   panel.setMicGain(next);
   live?.setMicGain(next);
-  panel.logLine(`🎚 gain micro → ${next.toFixed(1)}× (crête entendue ${peak.toFixed(3)})`);
+  // Dire quand la boucle est en butée : c'est le moment où « il n'entend pas
+  // assez » cesse d'être un problème de gain. Au-delà, monter encore dégraderait
+  // la compréhension au lieu de l'améliorer — c'est ailleurs qu'il faut chercher.
+  const bute = next >= GAIN_AUTO_MAX ? ' — maximum automatique atteint' : '';
+  panel.logLine(`🎚 gain micro → ${next.toFixed(1)}× (crête entendue ${peak.toFixed(3)})${bute}`);
 }
 
 const vad = new LocalVad({
@@ -516,7 +537,7 @@ if (geminiKey) {
 // pour ne pas revenir dans la session (cf. SoundEngine.setVoiceMode). C'est CE
 // branchement qui rend les sons jouables pendant une conversation — sans lui, il
 // fallait tous les couper, et c'est ce qu'on faisait.
-sound.onWillPlay((ms) => live?.gateMicFor(ms));
+sound.onWillPlay((ms, soundMs) => live?.gateMicFor(ms, soundMs));
 panel.setLiveSupported(!!live);
 // État de la clé : « saisie sur cet appareil » ne se déduit pas de « une clé est
 // active » — en dev, `.env.local` fait marcher Gemini sans que rien ne soit

@@ -39,7 +39,7 @@ const PENTA = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51];
  * haut-parleur du téléphone continue de sonner un peu, et la pièce répond : sans
  * cette queue, c'est la réverbération du blip qui rentre dans le micro.
  */
-const BLIP_TAIL_MS = 120;
+const BLIP_TAIL_MS = 70;
 
 // Motifs par son : suite de blips.
 const PATTERNS: Record<SoundName, Blip[]> = {
@@ -102,7 +102,7 @@ export class SoundEngine {
   private _muted = false;
   private _voiceMode = false;
   /** Prévenu AVANT chaque son, avec sa durée : cf. onWillPlay. */
-  private willPlay: ((durationMs: number) => void) | null = null;
+  private willPlay: ((durationMs: number, soundMs: number) => void) | null = null;
 
   get muted(): boolean {
     return this._muted;
@@ -137,7 +137,7 @@ export class SoundEngine {
    * durée totale — à charge de l'appelant de faire taire l'entrée pendant ce
    * temps-là (cf. LiveConversation.gateMicFor).
    */
-  onWillPlay(cb: (durationMs: number) => void): void {
+  onWillPlay(cb: (durationMs: number, soundMs: number) => void): void {
     this.willPlay = cb;
   }
 
@@ -164,7 +164,8 @@ export class SoundEngine {
     if (!ctx || ctx.state !== 'running') return; // pas encore débloqué
     // Le portillon d'abord : la queue couvre la réverbération du haut-parleur,
     // qui arrive APRÈS le dernier échantillon et se ferait entendre sans elle.
-    this.willPlay?.(this.durationOf(name) + BLIP_TAIL_MS);
+    const sonne = this.durationOf(name);
+    this.willPlay?.(sonne + BLIP_TAIL_MS, sonne);
     const t0 = ctx.currentTime;
     // Micro-désaccord à chaque lecture : deux `blink` d'affilée rigoureusement
     // identiques s'entendent comme un bip de machine. ±3 %, c'est inaudible comme

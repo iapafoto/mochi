@@ -51,7 +51,20 @@ export const DEFAULT_PITCH = 1.3;
 // Réactivité (détection de fin de parole). Plus `silenceDurationMs` est court,
 // plus Mochi rebondit vite quand tu t'arrêtes (spontanéité), au risque de te
 // couper si tu marques une pause. 350 ms = vif mais tolère les petites pauses.
-const VAD_SILENCE_MS = 350;
+/**
+ * ⚠️ 350 ms ÉTAIT TROP COURT POUR UNE INSTRUCTION, et c'est probablement la
+ * première cause de « il ne comprend pas ce que je lui demande ». Le serveur clôt
+ * ton tour dès qu'il voit ce silence-là : une hésitation ordinaire au milieu d'une
+ * phrase — « avance de… trente centimètres » — la coupe en deux, et Gemini répond
+ * à la moitié. Plus la demande est longue, plus elle a de pauses, donc plus elle
+ * risque d'être tronçonnée : exactement le symptôme décrit.
+ *
+ * On peut se permettre d'être patient DEPUIS qu'il existe une détection locale :
+ * le « mmh ? » part à 240 ms de silence et occupe le temps d'attente, donc
+ * allonger ce seuil ne se paie plus par un robot qui a l'air lent. C'est
+ * précisément ce que la réactivité locale a acheté.
+ */
+const VAD_SILENCE_MS = 650;
 const VAD_PREFIX_MS = 50; // durée de parole avant de committer le début de tour
 
 /**
@@ -194,9 +207,12 @@ export class LiveConversation {
    * s'écrasent (le dernier gagne) plutôt que de s'empiler : deux blips qui se
    * chevauchent ne demandent qu'une seule fenêtre, la plus tardive.
    */
-  gateMicFor(ms: number): void {
+  gateMicFor(ms: number, soundMs = ms): void {
     if (!this.session || this.speaking) return;
-    this.mic.setSilenced(true);
+    // Sourd pendant tout le portillon, mais AVEUGLE seulement tant que le blip
+    // sonne : dès qu'il s'est tu, la détection reprend et peut lever le portillon
+    // si tu reprends la parole (cf. MicCapture.setSilenced).
+    this.mic.setSilenced(true, Math.min(soundMs, ms));
     if (this.gateTimer !== null) window.clearTimeout(this.gateTimer);
     this.gateTimer = window.setTimeout(() => {
       this.gateTimer = null;
