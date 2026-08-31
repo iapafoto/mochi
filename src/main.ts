@@ -114,6 +114,17 @@ const THINKING_MIN_TURN_MS = 700;
 /** Au bout de ce silence sans AUCUNE détection, on soupçonne la détection. */
 const SILENCE_ALERT_MS = 25000;
 
+/**
+ * Calme requis avant d'appliquer une mise à jour (cf. setupPwa plus bas). Assez
+ * long pour qu'on ne recharge pas dans un blanc de conversation, assez court pour
+ * qu'une pause naturelle suffise — sinon on retombe dans le cas d'avant, où
+ * l'occasion ne se présentait jamais.
+ */
+const QUIET_BEFORE_UPDATE_MS = 15000;
+
+/** Dernier échange, dans un sens ou dans l'autre (parole humaine ou de Mochi). */
+let lastExchangeMs = Date.now();
+
 // --- Calibration automatique du gain micro ------------------------------------
 //
 // « Il faut parler très près pour qu'il entende » a deux causes possibles, et
@@ -198,12 +209,12 @@ const vad = new LocalVad({
     // silence, quel que soit le blip en cours. Un son de Mochi ne doit jamais
     // avoir la priorité sur une vraie voix.
     live?.ungateMic();
-    lastHeardMs = Date.now();
+    lastHeardMs = lastExchangeMs = Date.now();
     backchannel.start();
   },
   onSpeechEnd: (durationMs, peak) => {
     backchannel.stop();
-    lastHeardMs = Date.now();
+    lastHeardMs = lastExchangeMs = Date.now();
     // UNE ligne par phrase, avec les nombres qui décident. Sur un téléphone posé
     // sur un robot il n'y a pas de console : « il ne m'entend qu'de près » se
     // tranche ici, et nulle part ailleurs — c'est la crête qui dit à quel niveau
@@ -477,6 +488,7 @@ if (geminiKey) {
     },
     onMochiText: (t) => panel.logLine(`💬 Mochi : ${t}`),
     onSpeakingChange: (speaking) => {
+      lastExchangeMs = Date.now();
       if (speaking) {
         startMouthFlap();
         // Il prend la parole : l'écoute s'arrête, et la détection repart de zéro.
@@ -605,8 +617,25 @@ startMoodLoop();
 
 // Service worker : cache durable + politique de mise à jour. `busy()` est ce qui
 // empêche un rechargement de tomber au milieu d'une démo — voir src/pwa.ts.
+//
+// ⚠️ CE TEST ÉTAIT `live?.active || transport.connected`, ET IL NE POUVAIT JAMAIS
+// DEVENIR FAUX. Le démarrage automatique ouvre la conversation dès le lancement
+// (c'est tout l'intérêt du zéro clic) : `live.active` est donc vrai en permanence,
+// et la mise à jour attendait un repos qui n'arrivait pas. `src/pwa.ts` pariait sur
+// « le service worker en attente s'activera au prochain lancement à froid » — mais
+// sur Android, refermer l'appli ne libère pas forcément le client. Résultat vécu :
+// un téléphone bloqué trois versions en arrière, sans que rien ne l'explique.
+//
+// Ce qui compte n'est pas qu'une session soit OUVERTE, c'est qu'il se PASSE
+// quelque chose : quelqu'un parle, ou les roues tournent. Une conversation ouverte
+// mais silencieuse depuis un moment est au contraire l'instant idéal pour
+// recharger — personne ne le verra.
 setupPwa({
-  busy: () => !!live?.active || transport.connected,
+  busy: () => {
+    if (driveLoop.active || moveQueue.busy) return true; // il roule : on ne coupe pas
+    if (flapTimer !== null || vad.speaking) return true; // quelqu'un parle
+    return Date.now() - lastExchangeMs < QUIET_BEFORE_UPDATE_MS;
+  },
   log: (line) => panel.logLine(line),
 });
 

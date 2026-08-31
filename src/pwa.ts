@@ -30,6 +30,25 @@ export interface PwaHooks {
 /** Fréquence de la seconde chance quand la mise à jour est arrivée en pleine démo. */
 const RETRY_MS = 5000;
 
+/**
+ * Délai au-delà duquel on applique la mise à jour MÊME SI Mochi paraît occupé.
+ *
+ * ⚠️ FILET CONTRE LA PANNE QU'ON VIENT DE SUBIR. `busy()` est une heuristique, et
+ * une heuristique peut rester vraie pour toujours : le démarrage automatique
+ * ouvrait la conversation dès le lancement, donc « occupé » ne redevenait jamais
+ * faux, et un téléphone est resté bloqué TROIS versions en arrière sans que rien
+ * ne l'explique. Le commentaire au-dessus pariait sur « le prochain lancement à
+ * froid » — pari perdu : sur Android, refermer l'appli ne libère pas forcément le
+ * client, et le service worker en attente attend encore.
+ *
+ * Corriger `busy()` était nécessaire mais pas suffisant : la prochaine condition
+ * qu'on oubliera de relâcher produirait la même panne muette. Une échéance ferme,
+ * elle, garantit qu'aucune version ne peut rester coincée — au pire on recharge à
+ * un moment un peu impoli, ce qui est infiniment moins grave que de tester
+ * pendant une heure un correctif qui n'est pas là.
+ */
+const FORCE_AFTER_MS = 120000;
+
 export function setupPwa(hooks: PwaHooks): void {
   // Pas de service worker en dev (cf. `devOptions` dans vite.config.ts). On sort
   // AVANT la demande de stockage durable : au banc il n'y a ni cache à protéger
@@ -42,10 +61,12 @@ export function setupPwa(hooks: PwaHooks): void {
 
   let pending = false;
   let announced = false;
+  let pendingSince = 0;
 
   const updateSW = registerSW({
     onNeedRefresh() {
       pending = true;
+      pendingSince = Date.now();
       tryApply();
     },
     onOfflineReady() {
@@ -58,7 +79,8 @@ export function setupPwa(hooks: PwaHooks): void {
 
   function tryApply(): void {
     if (!pending) return;
-    if (hooks.busy()) {
+    const forced = Date.now() - pendingSince >= FORCE_AFTER_MS;
+    if (hooks.busy() && !forced) {
       // Une SEULE annonce, puis on retente en silence : répéter la ligne toutes
       // les 5 s noierait le journal pendant toute la démo.
       if (!announced) {
@@ -69,7 +91,7 @@ export function setupPwa(hooks: PwaHooks): void {
       return;
     }
     pending = false;
-    hooks.log('⬆ mise à jour : rechargement…');
+    hooks.log(forced ? '⬆ mise à jour forcée après 2 min : rechargement…' : '⬆ mise à jour : rechargement…');
     void updateSW(true); // skipWaiting + reload
   }
 }
