@@ -70,6 +70,20 @@ export interface PathPlan {
   minRadiusMm: number;
   /** Vitesse de croisière réellement atteinte. */
   topSpeedMmS: number;
+  /**
+   * Encombrement de la trajectoire RÉELLEMENT décrite, et distance maximale au
+   * point de départ.
+   *
+   * ⚠️ CE N'EST PAS `size_cm`. Celui-ci borne la forme DEMANDÉE ; ceux-là mesurent
+   * ce que le robot va effectivement parcourir une fois le cap lissé, les angles
+   * arrondis et les virages serrés ralentis. C'est cette mesure-là qui répond à la
+   * seule question qui compte pour la sécurité — « est-ce qu'il sort de la
+   * table ? » — et la longueur du tracé n'y répond pas du tout : une spirale de
+   * treize mètres tient dans 50 cm, une ligne droite de trois mètres quitte la pièce.
+   */
+  tracedWidthMm: number;
+  tracedHeightMm: number;
+  maxReachMm: number;
 }
 
 export interface PlanOptions {
@@ -175,13 +189,53 @@ export function planPath(points: Point[], opts: PlanOptions): PathPlan {
 
   let maxK = 0;
   for (const k of kappa) maxK = Math.max(maxK, Math.abs(k));
+  const extent = traceExtent(frames, dt);
   return {
     frames,
     durationMs: Math.round(total * 1000),
     lengthMm: (n - 1) * ds,
     minRadiusMm: maxK > 1e-9 ? 1 / maxK : Infinity,
     topSpeedMmS: Math.max(...v),
+    ...extent,
   };
+}
+
+/**
+ * Rejoue le programme pour connaître la place qu'il demande AU SOL.
+ *
+ * ⚠️ ON NE PEUT PAS SE CONTENTER DE `size_cm`. Celui-ci décrit la forme demandée ;
+ * ce qui compte pour savoir s'il sort de la table, c'est la trajectoire vraiment
+ * décrite — après lissage du cap, arrondi des angles et ralentissements. Les deux
+ * coïncident presque toujours, et c'est justement quand elles divergent qu'on veut
+ * le savoir.
+ *
+ * C'est la même intégration que le banc (scripts/test-path.mjs), volontairement :
+ * le robot fera exactement ça, aux imperfections mécaniques près.
+ */
+function traceExtent(frames: DriveVector[], dt: number) {
+  let x = 0;
+  let y = 0;
+  let th = 0;
+  let minX = 0;
+  let maxX = 0;
+  let minY = 0;
+  let maxY = 0;
+  let reach = 0;
+  for (const f of frames) {
+    const w = f.turnDegS / RAD_TO_DEG;
+    // Le cap tourne PENDANT le pas : on l'intègre par moitiés, sinon les courbes
+    // serrées se ferment mal et l'encombrement calculé serait trop grand.
+    th += w * dt * 0.5;
+    x += f.speedMmS * dt * Math.cos(th);
+    y += f.speedMmS * dt * Math.sin(th);
+    th += w * dt * 0.5;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    reach = Math.max(reach, Math.hypot(x, y));
+  }
+  return { tracedWidthMm: maxX - minX, tracedHeightMm: maxY - minY, maxReachMm: reach };
 }
 
 /** Ramène un écart d'angle dans ]−π, π]. */

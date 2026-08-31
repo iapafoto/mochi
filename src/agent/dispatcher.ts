@@ -48,15 +48,20 @@ const MOVING_INTENTS = new Set([
  * automatique s'il tombe, et le TTL homme-mort qui l'arrête en 300 ms si le lien
  * lâche. Tout ça existe, donc la longueur n'a plus à être rationnée.
  *
- * Ce qui reste à attraper, c'est l'emballement : un `d` où le modèle n'a pas vu ce
- * qu'il demandait (une spirale de cinquante tours tient dans 40 cm et fait
- * soixante mètres). Les valeurs sont donc larges — elles ne doivent JAMAIS refuser
- * une figure qu'un humain aurait voulue, seulement une qui n'a manifestement pas
- * été voulue. La durée est le second filet, pour un tracé court mais si tortueux
- * qu'il se parcourt au ralenti.
+ * ⚠️ ET CE N'EST PAS NON PLUS LA LONGUEUR QU'IL FALLAIT BORNER, mais la PLACE AU
+ * SOL. C'est la seule grandeur qui réponde à « est-ce qu'il sort de la table » :
+ * une spirale de treize mètres tient dans 50 cm, une ligne droite de trois mètres
+ * quitte la pièce. Le plafond de longueur a donc disparu — il refusait des figures
+ * parfaitement sages et laissait passer celles qui s'en vont.
+ *
+ * L'encombrement est mesuré sur la trajectoire RÉELLEMENT décrite (planPath la
+ * rejoue), pas sur le `size_cm` demandé : les deux coïncident presque toujours, et
+ * c'est justement quand ils divergent qu'on veut le savoir.
+ *
+ * La durée reste en second filet, contre l'absurde seulement : un `d` de soixante
+ * arcs tient dans 60 cm et se parcourt en vingt minutes.
  */
 const PATH_MAX_SIZE_CM = 200;
-const PATH_MAX_LENGTH_MM = 15000;
 const PATH_MAX_DURATION_MS = 120000;
 
 /**
@@ -189,21 +194,26 @@ export class Dispatcher {
             maxTurnDegS: MAX_TURN_DEG_S,
             refreshHz: REFRESH_HZ,
           });
-          // Les deux garde-fous portent sur le tracé RÉEL, pas sur `size_cm` :
-          // l'encombrement demandé ne dit rien de la distance parcourue ni du temps
-          // passé, et ce sont eux qui trahissent un `d` que personne n'a voulu.
-          if (plan.lengthMm > PATH_MAX_LENGTH_MM) {
+          // LE GARDE-FOU QUI COMPTE : la place que le tracé demande AU SOL, mesurée
+          // sur la trajectoire réellement décrite. C'est la seule grandeur qui
+          // réponde à « est-ce qu'il sort de la table ». La longueur n'y répond pas :
+          // une spirale de treize mètres tient dans 50 cm, une ligne droite de trois
+          // mètres quitte la pièce.
+          const encombrement = Math.max(plan.tracedWidthMm, plan.tracedHeightMm);
+          if (encombrement > PATH_MAX_SIZE_CM * 10) {
             return {
               name: call.name,
               ok: false,
-              detail: `tracé démesuré (${Math.round(plan.lengthMm / 100)} m pour ${PATH_MAX_LENGTH_MM / 1000} m max) — le chemin est sûrement plus compliqué que prévu`,
+              detail: `il lui faudrait ${Math.round(encombrement / 10)} cm de place (max ${PATH_MAX_SIZE_CM})`,
             };
           }
+          // Second filet, contre l'absurde et non contre le long : un `d` de
+          // soixante arcs tient dans 60 cm et se parcourt en vingt minutes.
           if (plan.durationMs > PATH_MAX_DURATION_MS) {
             return {
               name: call.name,
               ok: false,
-              detail: `tracé trop lent (${Math.round(plan.durationMs / 1000)} s pour ${PATH_MAX_DURATION_MS / 1000} s max) — trop de virages serrés`,
+              detail: `tracé interminable (${Math.round(plan.durationMs / 1000)} s pour ${PATH_MAX_DURATION_MS / 1000} s max) — le chemin est plus compliqué que prévu`,
             };
           }
           this.sound.play('move');
@@ -211,7 +221,10 @@ export class Dispatcher {
           this.drive.runProgram(plan.frames);
           return ok(
             call.name,
-            `${Math.round(plan.lengthMm / 10)} cm en ${(plan.durationMs / 1000).toFixed(1)} s ` +
+            `${Math.round(plan.lengthMm / 10)} cm de tracé en ${(plan.durationMs / 1000).toFixed(1)} s, ` +
+              // La place au sol EST le chiffre utile devant un robot sur une table :
+              // c'est celui qui dit s'il faut dégager de l'espace avant de lancer.
+              `place au sol ${Math.round(plan.tracedWidthMm / 10)}×${Math.round(plan.tracedHeightMm / 10)} cm ` +
               `(${speed}, ${Math.round(plan.topSpeedMmS)} mm/s, rayon min ` +
               `${Number.isFinite(plan.minRadiusMm) ? Math.round(plan.minRadiusMm) + ' mm' : 'droit'})`,
           );
