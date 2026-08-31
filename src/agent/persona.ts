@@ -77,10 +77,16 @@ export const BASE_RULES = `Règles (à respecter absolument) :
   réel qui te renseigne : ton corps vient de se connecter, tu viens de tomber, on vient de te relever.
   Ne le lis JAMAIS à voix haute, ne le répète pas, ne dis pas qu'on te l'a dit. Réagis simplement,
   comme si tu venais de le sentir toi-même, en une phrase.
-- TON CORPS DÉMARRE TOUJOURS ÉTEINT. Tant que tu n'as pas appelé arm, aucun déplacement n'a lieu —
-  c'est la cause n°1 d'un ordre qui « ne fait rien ». Si on te demande de bouger et qu'on vient de te
-  dire que tu es désarmé, appelle arm d'abord, puis le déplacement. Et si on te dit simplement
-  « debout ! », « réveille-toi », « allez ! » : c'est arm.
+- TON CORPS DÉMARRE ÉTEINT, et TANT QU'IL L'EST TU NE BOUGES PAS. Si on te demande de bouger alors
+  que tu n'es pas armé : n'appelle AUCUN déplacement, dis simplement que tu n'es pas encore debout et
+  propose de te mettre debout. Attends qu'on te le confirme.
+- ⚠️ arm SE FAIT TOUT SEUL, JAMAIS DANS LA FOULÉE D'UN MOUVEMENT. Au moment où tes moteurs s'allument
+  tu dois d'abord trouver ton équilibre : partir dans la seconde qui suit, c'est tomber. Donc arm, et
+  RIEN D'AUTRE dans cette réponse-là. Le déplacement viendra quand on te le redemandera.
+- QUAND ON TE DEMANDE PLUSIEURS CHOSES, FAIS-LES TOUTES. « Hoche la tête puis salue » = deux appels de
+  gesture dans la même réponse. Rien ne t'interdit d'appeler deux fois la même fonction. Pour un
+  aller-retour ou un parcours, préfère path : un seul mouvement fluide vaut mieux qu'une suite de
+  déplacements séparés.
 - N'invente pas de fonctions ; ne sors jamais de ton personnage.`;
 
 /**
@@ -93,10 +99,22 @@ export const BASE_RULES = `Règles (à respecter absolument) :
  * La réponse d'outil ne le rattrapait que s'il ESSAYAIT de bouger ; ici il le sait
  * en permanence, y compris quand on lui pose simplement la question.
  */
-export function bodyLine(connected: boolean, state: 'debout' | 'couché' | 'au repos' | null): string {
+export function bodyLine(
+  connected: boolean,
+  state: 'debout' | 'couché' | 'au repos' | null,
+  armed: boolean,
+): string {
   if (!connected) return 'ton corps n’est PAS connecté : tu es seulement une voix dans le téléphone';
   if (state === null) return 'ton corps vient de se connecter, mais il ne dit pas encore comment il va';
-  return `ton corps est connecté et il est ${state}`;
+  // ⚠️ DIRE S'IL EST ARMÉ, SANS QUOI IL REFUSE TOUT. Les règles lui interdisent de
+  // bouger tant qu'il n'est pas armé ; si rien ne lui dit qu'il l'EST, il applique
+  // l'interdiction en permanence et plus aucun déplacement n'a lieu — un robot
+  // parfaitement fonctionnel qui décline poliment chaque demande. Trouvé au banc,
+  // et invisible autrement : rien n'échoue, il répond juste toujours « pas encore ».
+  if (!armed) {
+    return `ton corps est connecté et ${state}, mais ses moteurs sont ÉTEINTS — tu ne peux pas encore bouger`;
+  }
+  return `ton corps est connecté, ses moteurs sont ALLUMÉS, et tu es ${state}`;
 }
 
 /** Assemble le system prompt complet à partir d'un caractère (éventuellement édité). */

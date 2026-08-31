@@ -580,7 +580,15 @@ transport.onTelemetry((dv) => {
   const t = parseTelemetry(dv);
   if (!t) return;
   const previous = lastTelemetry?.state;
+  const wasArmed = lastTelemetry?.armed;
   lastTelemetry = t;
+  if (wasArmed !== undefined && wasArmed !== t.armed) {
+    notifyBody(
+      t.armed
+        ? 'tes moteurs viennent de s’allumer : tu tiens debout et tu peux bouger'
+        : 'tes moteurs viennent de s’éteindre : tu ne peux plus bouger',
+    );
+  }
   panel.setTelemetry(t);
   panel.setArmed(t.armed);
   if (previous !== undefined && previous !== t.state) reactToState(previous, t.state);
@@ -728,7 +736,13 @@ function moveGate(): string | null {
   // envoyé, le robot n'a rien fait ». La remplacer par un refus ferait perdre
   // l'octet, c'est-à-dire précisément ce que le journal a été fait pour montrer.
   if (!transport.connected || !lastTelemetry) return null;
-  if (!lastTelemetry.armed) return 'robot désarmé — cliquer « ⚡ Armer »';
+  // ⚠️ CE TEXTE PART JUSQU'AU MODÈLE (cf. bodyAwareResult), il n'est plus seulement
+  // affiché : « cliquer ⚡ Armer » n'apprenait rien à Mochi, qui ne clique nulle
+  // part. Il faut lui dire ce que LUI peut faire — et surtout ne pas le faire
+  // enchaîner : armer puis partir dans la seconde, c'est tomber.
+  if (!lastTelemetry.armed) {
+    return 'tes moteurs sont éteints — propose de te mettre debout (arm), et attends avant de bouger';
+  }
   if (lastTelemetry.state === RobotState.FALLEN) {
     return 'il est tombé — le relever droit et attendre « ⚖ en équilibre »';
   }
@@ -844,6 +858,7 @@ function startLive(): void {
   const sys = `${buildSystemInstruction(agent.getPersona?.() ?? DEFAULT_PERSONA)}\n\nÀ cet instant : ${bodyLine(
     transport.connected,
     bodyPosture(),
+    lastTelemetry?.armed === true,
   )}.`;
   void live.start(sys);
 }
