@@ -16,20 +16,12 @@
 //  - on NE s'écoute PAS parler : l'envoi micro est coupé tant que Mochi parle
 //    (anti-larsen ; `echoCancellation` en complément).
 
-import {
-  GoogleGenAI,
-  Modality,
-  StartSensitivity,
-  EndSensitivity,
-  type Session,
-  type LiveServerMessage,
-} from '@google/genai';
+import { GoogleGenAI, type Session, type LiveServerMessage } from '@google/genai';
+import { LIVE_MODEL, liveSessionConfig } from './liveConfig';
 import { toGeminiTools } from './gemini';
 import type { IntentCall } from './intents';
 import { MicCapture } from '../audio/mic';
 import { VoicePlayer } from '../audio/voicePlayer';
-
-const MODEL = 'gemini-3.1-flash-live-preview';
 
 /** Voix préfabriquées du modèle Live (nom API + libellé FR). Les 4 premières
  * sont féminines / plus jeunes ; Puck & Fenrir sont masculines (pour comparer). */
@@ -48,24 +40,7 @@ export const DEFAULT_VOICE = 'Zephyr';
 /** Pitch par défaut : 1.3× (aigu « bébé/animal ») — retenu aux tests. */
 export const DEFAULT_PITCH = 1.3;
 
-// Réactivité (détection de fin de parole). Plus `silenceDurationMs` est court,
-// plus Mochi rebondit vite quand tu t'arrêtes (spontanéité), au risque de te
-// couper si tu marques une pause. 350 ms = vif mais tolère les petites pauses.
-/**
- * ⚠️ 350 ms ÉTAIT TROP COURT POUR UNE INSTRUCTION, et c'est probablement la
- * première cause de « il ne comprend pas ce que je lui demande ». Le serveur clôt
- * ton tour dès qu'il voit ce silence-là : une hésitation ordinaire au milieu d'une
- * phrase — « avance de… trente centimètres » — la coupe en deux, et Gemini répond
- * à la moitié. Plus la demande est longue, plus elle a de pauses, donc plus elle
- * risque d'être tronçonnée : exactement le symptôme décrit.
- *
- * On peut se permettre d'être patient DEPUIS qu'il existe une détection locale :
- * le « mmh ? » part à 240 ms de silence et occupe le temps d'attente, donc
- * allonger ce seuil ne se paie plus par un robot qui a l'air lent. C'est
- * précisément ce que la réactivité locale a acheté.
- */
-const VAD_SILENCE_MS = 650;
-const VAD_PREFIX_MS = 50; // durée de parole avant de committer le début de tour
+// Le seuil de fin de parole et la voix vivent dans liveConfig.ts.
 
 /**
  * Durée MAXIMALE d'un portillon micro, quel que soit le son joué.
@@ -254,7 +229,7 @@ export class LiveConversation {
     try {
       const ai = new GoogleGenAI({ apiKey: this.apiKey });
       this.session = await ai.live.connect({
-        model: MODEL,
+        model: LIVE_MODEL,
         callbacks: {
           onmessage: (m) => this.handle(m),
           onerror: (e) => this.fail(e.message || 'erreur de session'),
@@ -272,23 +247,11 @@ export class LiveConversation {
             void this.teardown('error', `session fermée par le serveur${why ? ` (${why})` : ''}`);
           },
         },
-        config: {
-          responseModalities: [Modality.AUDIO],
-          systemInstruction,
-          tools: this.tools,
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.voice } } },
-          // VAD réactif : Mochi répond dès que tu marques un court silence.
-          realtimeInputConfig: {
-            automaticActivityDetection: {
-              startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
-              endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
-              prefixPaddingMs: VAD_PREFIX_MS,
-              silenceDurationMs: VAD_SILENCE_MS,
-            },
-          },
-        },
+        // ⚠️ LA CONFIG VIT DANS liveConfig.ts, ET C'EST VOULU : le serveur peut la
+        // refuser, et une config refusée = aucune session, donc Mochi muet sur le
+        // téléphone. Écrite là-bas (sans dépendance navigateur), elle est
+        // vérifiable avant déploiement par scripts/test-live-config.mjs.
+        config: liveSessionConfig(systemInstruction, this.voice, this.tools),
       });
     } catch (err) {
       this.fail(`connexion Live échouée : ${(err as Error).message}`);
