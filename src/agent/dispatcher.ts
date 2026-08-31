@@ -23,6 +23,14 @@ import type { MoodEngine } from '../affect/mood';
 import type { EmoteLayer, EmoteKind } from '../fx/emotes';
 import { EMOTE_KINDS } from '../fx/emotes';
 
+/** Mise en route du corps, fournie par main.ts (cf. le constructeur). */
+export interface BodyControls {
+  arm(on: boolean): boolean;
+  setZero(): boolean;
+  /** Raison du dernier refus, rédigée pour être lue PAR MOCHI. */
+  lastRefusal(): string;
+}
+
 /** Résultat d'un dispatch, remonté au panneau debug. */
 export interface DispatchResult {
   name: string;
@@ -34,9 +42,10 @@ export interface DispatchResult {
  * Les intentions qui font ROULER le robot. Même liste que la famille DÉPLACEMENT
  * décrite à Gemini dans intents.ts — si l'une des deux bouge, l'autre aussi.
  */
-const MOVING_INTENTS = new Set([
-  'forward', 'backward', 'turn', 'circle', 'path', 'nod', 'bow', 'wiggle',
-]);
+const MOVING_INTENTS = new Set(['move', 'turn', 'circle', 'path', 'gesture']);
+
+/** Gestes scriptés du firmware, exposés sous un seul nom (cf. intents.ts). */
+const GESTURES: Record<string, number> = { nod: Op.NOD, bow: Op.BOW, wiggle: Op.WIGGLE };
 
 /**
  * Plafonds d'un tracé. Ce sont des garde-fous contre l'ABSURDE, pas contre le long.
@@ -92,6 +101,16 @@ export class Dispatcher {
      * donc un seul déplacement à la fois.
      */
     private readonly moves?: MoveQueue,
+    /**
+     * Mise en route du corps (armement, point d'équilibre). Rend `false` en cas de
+     * refus, la raison étant lue ensuite par `lastRefusal()` — et cette raison part
+     * jusqu'au MODÈLE via la réponse d'outil, donc elle est écrite pour lui.
+     *
+     * Vit dans main.ts et pas ici : les garde-fous (« tiens-le droit », « il est en
+     * équilibre, prends-le en main ») se décident sur la télémétrie, dont main.ts
+     * est le seul propriétaire.
+     */
+    private readonly body?: BodyControls,
   ) {}
 
   dispatch(call: IntentCall): DispatchResult {
@@ -131,16 +150,20 @@ export class Dispatcher {
         this.emotes?.spawn(kind);
         return ok(call.name, kind);
       }
-      case 'blink':
+      case 'blink': {
+        // Un clin d'oeil EST un clignement d'un seul oeil : meme fonction, le
+        // parametre porte l'intention (complice) plutot qu'un second nom.
+        const side = a.side === 'left' || a.side === 'right' ? a.side : null;
+        if (side) {
+          wink(this.face, side);
+          this.sound.play('wink');
+          return ok(call.name, `clin d'oeil ${side}`);
+        }
         blink(this.face);
         this.sound.play('blink');
         return ok(call.name, '');
-      case 'wink': {
-        const side = a.side === 'right' ? 'right' : 'left';
-        wink(this.face, side);
-        this.sound.play('wink');
-        return ok(call.name, side);
       }
+
       case 'look': {
         // REGARD SEUL — volontairement plus de OP_LOOK ici.
         // Le modèle appelle look à presque chaque réplique : sur un mock c'était
@@ -153,13 +176,15 @@ export class Dispatcher {
       }
 
       // --- Déplacement réel ---
-      case 'forward':
-      case 'backward': {
-        const op = call.name === 'forward' ? Op.FORWARD : Op.BACKWARD;
-        return this.move(call.name, op, int(a.cm), a.speed, `${int(a.cm)} cm`);
+      case 'move': {
+        // Distance SIGNEE : le signe choisit l'opcode, ce que deux fonctions
+        // distinctes faisaient avant. Le firmware, lui, garde ses deux opcodes.
+        const cm = int(a.cm);
+        const op = cm < 0 ? Op.BACKWARD : Op.FORWARD;
+        return this.moveMeasured(call.name, op, Math.abs(cm), a.speed, `${cm} cm`);
       }
       case 'turn':
-        return this.move(call.name, Op.TURN, int(a.deg), a.speed, `${int(a.deg)}°`);
+        return this.moveMeasured(call.name, Op.TURN, int(a.deg), a.speed, `${int(a.deg)}°`);
       case 'circle': {
         if (!this.drive) return { name: call.name, ok: false, detail: 'pas de pilote de trajectoire' };
         const dir = a.dir === 'left' ? 'left' : 'right';
@@ -234,15 +259,27 @@ export class Dispatcher {
           return { name: call.name, ok: false, detail: `chemin illisible : ${(e as Error).message}` };
         }
       }
-      case 'nod':
-        this.transport.sendIntent(Op.NOD);
-        return ok(call.name, '');
-      case 'bow':
-        this.transport.sendIntent(Op.BOW);
-        return ok(call.name, '');
-      case 'wiggle':
-        this.transport.sendIntent(Op.WIGGLE);
-        return ok(call.name, '');
+      case 'gesture': {
+        const kind = String(a.kind);
+        const known = kind in GESTURES;
+        this.transport.sendIntent(known ? GESTURES[kind] : Op.NOD);
+        this.sound.play('move');
+        return ok(call.name, known ? kind : 'nod (valeur inconnue)');
+      }
+
+      // --- Mise en route du corps ---
+      case 'arm': {
+        if (!this.body) return { name: call.name, ok: false, detail: 'pas de corps à piloter' };
+        return this.body.arm(a.on !== false)
+          ? ok(call.name, a.on !== false ? 'sous tension' : 'au repos')
+          : { name: call.name, ok: false, detail: this.body.lastRefusal() };
+      }
+      case 'set_zero': {
+        if (!this.body) return { name: call.name, ok: false, detail: 'pas de corps à piloter' };
+        return this.body.setZero()
+          ? ok(call.name, 'point d’équilibre réglé')
+          : { name: call.name, ok: false, detail: this.body.lastRefusal() };
+      }
 
       default:
         return { name: call.name, ok: false, detail: 'intention inconnue' };
@@ -260,7 +297,7 @@ export class Dispatcher {
    * Sans file (aucune passée au constructeur), on retombe sur l'émission directe :
    * un seul déplacement à la fois, comme avant.
    */
-  private move(
+  private moveMeasured(
     name: string,
     op: number,
     value: number,

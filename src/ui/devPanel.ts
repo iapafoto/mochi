@@ -89,8 +89,8 @@ const EMOTION_BTNS: [string, IntentCall][] = [
 
 const ACTION_BTNS: [string, IntentCall][] = [
   ['blink', { name: 'blink', args: {} }],
-  ['wink L', { name: 'wink', args: { side: 'left' } }],
-  ['wink R', { name: 'wink', args: { side: 'right' } }],
+  ['wink L', { name: 'blink', args: { side: 'left' } }],
+  ['wink R', { name: 'blink', args: { side: 'right' } }],
   ['look ◀', { name: 'look', args: { dir: 'left' } }],
   ['look ▶', { name: 'look', args: { dir: 'right' } }],
   ['look ▲', { name: 'look', args: { dir: 'up' } }],
@@ -99,16 +99,16 @@ const ACTION_BTNS: [string, IntentCall][] = [
 ];
 
 const MOTOR_BTNS: [string, IntentCall][] = [
-  ['forward 20', { name: 'forward', args: { cm: 20 } }],
-  ['backward 20', { name: 'backward', args: { cm: 20 } }],
+  ['avance 20', { name: 'move', args: { cm: 20 } }],
+  ['recule 20', { name: 'move', args: { cm: -20 } }],
   ['turn +90', { name: 'turn', args: { deg: 90 } }],
   ['turn -90', { name: 'turn', args: { deg: -90 } }],
   ['○ rond 30 ↻', { name: 'circle', args: { radius_cm: 30, turns: 1, dir: 'right' } }],
   ['○ rond 30 ↺', { name: 'circle', args: { radius_cm: 30, turns: 1, dir: 'left' } }],
   ['○ rond 30 ↻ vite', { name: 'circle', args: { radius_cm: 30, turns: 1, dir: 'right', speed: 'fast' } }],
-  ['nod', { name: 'nod', args: {} }],
-  ['bow', { name: 'bow', args: {} }],
-  ['wiggle', { name: 'wiggle', args: {} }],
+  ['nod', { name: 'gesture', args: { kind: 'nod' } }],
+  ['bow', { name: 'gesture', args: { kind: 'bow' } }],
+  ['wiggle', { name: 'gesture', args: { kind: 'wiggle' } }],
 ];
 
 const EMOTE_BTNS: [string, IntentCall][] = [

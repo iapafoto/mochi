@@ -81,17 +81,18 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
   },
   {
     name: 'blink',
-    description: 'Fait cligner des yeux Mochi (petit clignement mignon).',
-  },
-  {
-    name: 'wink',
-    description: "Fait un clin d'œil complice.",
+    description:
+      "Cligne des yeux. Sans `side` : un petit clignement mignon. Avec `side` : un CLIN D'ŒIL "
+      + 'complice, sur cet œil-là — la nuance est dans l’intention, pas dans le mécanisme.',
     parameters: {
       type: 'object',
       properties: {
-        side: { type: 'string', enum: ['left', 'right'], description: "Œil du clin d'œil." },
+        side: {
+          type: 'string',
+          enum: ['left', 'right'],
+          description: "Un seul œil = clin d'œil complice. Omets-le pour un clignement ordinaire.",
+        },
       },
-      required: ['side'],
     },
   },
   {
@@ -110,6 +111,38 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
       required: ['dir'],
     },
   },
+  // --- Mise en route du corps -------------------------------------------------
+  //
+  // ⚠️ CES DEUX-LÀ SONT TOUJOURS EXPOSÉES, alors qu'elles n'ont de sens que dans un
+  // état précis. L'idée d'une liste d'outils qui change avec l'état est bonne, mais
+  // les outils sont figés à l'ouverture de la session Live : en changer voudrait
+  // dire reconnecter, donc perdre le fil de la conversation. Elle est de toute
+  // façon devenue inutile — Mochi SAIT en permanence où en est son corps (canal
+  // [[…]]) et un refus lui revient avec sa raison. La liste n'a plus à encoder la
+  // machine à états.
+  {
+    name: 'arm',
+    description:
+      "Met le corps sous tension (ou le coupe). TANT QUE CE N'EST PAS FAIT, AUCUN DÉPLACEMENT "
+      + "N'A LIEU — le robot démarre toujours désarmé. Appelle-la dès qu'on te demande de te mettre "
+      + 'debout, de te réveiller, de démarrer, ou quand on te demande de bouger alors qu’on vient de '
+      + 'te dire que tu es désarmé. Désarmer le fait s’asseoir : à faire quand on te dit de te reposer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        on: { type: 'boolean', description: 'true = sous tension, false = au repos.' },
+      },
+      required: ['on'],
+    },
+  },
+  {
+    name: 'set_zero',
+    description:
+      "Règle le point d'équilibre : la position dans laquelle on te tient DEVIENT ta verticale. "
+      + "Ne se fait que robot TENU EN MAIN et bien droit — dis-le à voix haute avant, et attends "
+      + "qu'on te tienne. À proposer si tu penches toujours du même côté ou si tu n'arrives plus à "
+      + 'tenir debout ; sinon, n’y touche pas, un réglage inutile ne peut que le dégrader.',
+  },
   // --- Déplacement RÉEL (BLE → ESP32) ---
   {
     name: 'stop',
@@ -119,22 +152,19 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
       + "Elle ne coûte rien et n'a aucun effet s'il ne bouge pas : dans le doute, appelle-la.",
   },
   {
-    name: 'forward',
+    // `forward` et `backward` étaient deux fonctions pour un seul mouvement. Une
+    // distance SIGNÉE suffit — et `turn` le faisait déjà avec un angle signé, donc
+    // la paire était en plus incohérente avec sa voisine.
+    name: 'move',
     description:
-      'DÉPLACEMENT RÉEL : avance de N centimètres. À n’appeler que si on demande de bouger.',
+      'DÉPLACEMENT RÉEL, MESURÉ : parcourt N centimètres et s’arrête à la bonne distance '
+      + '(positif = avance, négatif = recule). À n’appeler que si on demande de bouger.',
     parameters: {
       type: 'object',
-      properties: { cm: { type: 'integer', description: 'Distance en cm.' }, speed: MOVE_SPEED_PARAM },
-      required: ['cm'],
-    },
-  },
-  {
-    name: 'backward',
-    description:
-      'DÉPLACEMENT RÉEL : recule de N centimètres. À n’appeler que si on demande de bouger.',
-    parameters: {
-      type: 'object',
-      properties: { cm: { type: 'integer', description: 'Distance en cm.' }, speed: MOVE_SPEED_PARAM },
+      properties: {
+        cm: { type: 'integer', description: 'Distance en cm ; négatif pour reculer.' },
+        speed: MOVE_SPEED_PARAM,
+      },
       required: ['cm'],
     },
   },
@@ -217,11 +247,24 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
-    name: 'nod',
-    description: 'DÉPLACEMENT RÉEL : hoche la tête (oui) en basculant sur ses roues.',
+    // `nod`, `bow` et `wiggle` etaient trois fonctions sans parametre pour la meme
+    // chose : declencher un geste scripte du firmware. Un enum, comme `emote`.
+    name: 'gesture',
+    description:
+      'DÉPLACEMENT RÉEL : un petit geste du corps, sur place. À n’appeler que si on demande de bouger '
+      + 'ou de réagir physiquement.',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: {
+          type: 'string',
+          enum: ['nod', 'bow', 'wiggle'],
+          description: 'nod = hoche la tête (oui), bow = révérence, wiggle = se dandine.',
+        },
+      },
+      required: ['kind'],
+    },
   },
-  { name: 'bow', description: 'DÉPLACEMENT RÉEL : fait une révérence.' },
-  { name: 'wiggle', description: 'DÉPLACEMENT RÉEL : se dandine (frétille) de façon rigolote.' },
   // --- Emotes (petites particules expressives autour de Mochi) ---
   {
     name: 'emote',

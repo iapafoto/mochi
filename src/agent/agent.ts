@@ -48,7 +48,7 @@ export function createLocalAgent(hooks: AgentHooks): Agent {
     const dir = (): 'left' | 'right' =>
       /droite|droit/.test(t) ? 'right' : 'left';
 
-    if (/clin/.test(t)) calls.push({ name: 'wink', args: { side: dir() } });
+    if (/clin/.test(t)) calls.push({ name: 'blink', args: { side: dir() } });
     if (/cligne/.test(t)) calls.push({ name: 'blink', args: {} });
 
     if (/regarde|regard/.test(t)) {
@@ -60,16 +60,16 @@ export function createLocalAgent(hooks: AgentHooks): Agent {
       calls.push({ name: 'look', args: { dir: d } });
     }
 
-    if (/avance/.test(t)) calls.push({ name: 'forward', args: { cm: Math.abs(num()) } });
-    if (/recule/.test(t)) calls.push({ name: 'backward', args: { cm: Math.abs(num()) } });
+    if (/avance/.test(t)) calls.push({ name: 'move', args: { cm: Math.abs(num()) } });
+    if (/recule/.test(t)) calls.push({ name: 'move', args: { cm: -Math.abs(num()) } });
     if (/tourne|pivote/.test(t)) {
       const deg = Math.abs(num()) * (/gauche/.test(t) ? -1 : 1);
       calls.push({ name: 'turn', args: { deg } });
     }
-    if (/hoche|oui\b|acquiesce/.test(t)) calls.push({ name: 'nod', args: {} });
-    if (/révérence|reverence|salue/.test(t)) calls.push({ name: 'bow', args: {} });
+    if (/hoche|oui\b|acquiesce/.test(t)) calls.push({ name: 'gesture', args: { kind: 'nod' } });
+    if (/révérence|reverence|salue/.test(t)) calls.push({ name: 'gesture', args: { kind: 'bow' } });
     if (/danse|frétille|fretille|dandine|remue/.test(t))
-      calls.push({ name: 'wiggle', args: {} });
+      calls.push({ name: 'gesture', args: { kind: 'wiggle' } });
 
     // Émotions.
     let emotion: string | null = null;

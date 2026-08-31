@@ -57,6 +57,14 @@ const dispatcher = new Dispatcher(
   driveLoop,
   moveGate,
   moveQueue,
+  // Référencé en différé, comme `gate` ci-dessus : `bodyControls` est un const
+  // déclaré plus bas (il lit la télémétrie et le panneau), et un const ne remonte
+  // pas. Les méthodes n'étant appelées qu'au dispatch, l'indirection suffit.
+  {
+    arm: (on) => bodyControls.arm(on),
+    setZero: () => bodyControls.setZero(),
+    lastRefusal: () => bodyControls.lastRefusal(),
+  },
 );
 
 const renderer = new FaceRenderer(canvas, face);
@@ -652,9 +660,7 @@ function bodyAwareResult(
 }
 
 /** Doit rester aligné sur MOVING_INTENTS (agent/dispatcher.ts). */
-const MOVING_INTENT_NAMES = new Set([
-  'forward', 'backward', 'turn', 'circle', 'path', 'nod', 'bow', 'wiggle',
-]);
+const MOVING_INTENT_NAMES = new Set(['move', 'turn', 'circle', 'path', 'gesture']);
 
 // --- Réflexes de posture -----------------------------------------------------
 //
@@ -731,6 +737,55 @@ function moveGate(): string | null {
   }
   return null;
 }
+
+/**
+ * Mise en route du corps À LA VOIX — ce que les boutons « ⚡ Armer » et « ⌖ Zéro »
+ * font au doigt.
+ *
+ * ⚠️ MÊMES GARDE-FOUS QUE LES BOUTONS, ET POUR LA MÊME RAISON. Régler le zéro
+ * demande de tenir le robot DROIT EN MAIN : la pose du moment devient sa verticale,
+ * donc le faire posé de travers grave un travers. Le firmware refuse au-delà de
+ * ZERO_CAPTURE_MAX_DEG, en silence — c'est son rôle ; ici on l'explique, et la
+ * différence est que l'explication remonte maintenant jusqu'à MOCHI, qui peut la
+ * dire à voix haute (« tiens-moi bien droit ! ») au lieu de rester perplexe.
+ */
+let bodyRefusal = '';
+const bodyControls = {
+  arm(on: boolean): boolean {
+    if (!transport.connected) {
+      bodyRefusal = 'ton corps n’est pas connecté — rien ne s’est allumé';
+      return false;
+    }
+    if (!on) {
+      moveQueue.clear();
+      driveLoop.stop();
+    }
+    // Le zéro se capture AVANT l'armement : après, le robot corrige déjà et la pose
+    // qu'on lui désignerait ne serait plus celle de la main (cf. le bouton).
+    if (on && panel.zeroOnArm) captureZero('⌖ zéro capturé en armant');
+    transport.sendIntent(Op.ARM, on ? 1 : 0);
+    panel.logLine(on ? '⚡ armement demandé (voix)' : '⚡ désarmement demandé (voix)');
+    return true;
+  },
+  setZero(): boolean {
+    const pitch = lastTelemetry?.pitchDeg;
+    if (!transport.connected || pitch === undefined) {
+      bodyRefusal = 'ton corps n’est pas connecté — impossible de régler quoi que ce soit';
+      return false;
+    }
+    if (Math.abs(pitch) > ZERO_CAPTURE_MAX_DEG) {
+      bodyRefusal =
+        `tu es penché de ${Math.abs(pitch).toFixed(0)}° : demande qu’on te tienne bien DROIT en main, ` +
+        'puis réessaye';
+      return false;
+    }
+    captureZero('⌖ zéro capturé (voix)');
+    return true;
+  },
+  lastRefusal(): string {
+    return bodyRefusal;
+  },
+};
 
 /**
  * Capture « la pose actuelle = 0° », avec la même garde que le firmware.
