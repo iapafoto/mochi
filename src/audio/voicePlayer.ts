@@ -6,6 +6,13 @@
 // local) et signale quand Mochi parle — pour animer la bouche et couper le micro.
 
 const OUTPUT_RATE = 24000;
+/**
+ * Marge du chien de garde apres la fin THEORIQUE de l'audio programme (cf.
+ * armWatchdog). Large : on ne veut surtout pas couper une voix qui parle encore,
+ * seulement rattraper un evenement de fin qui ne viendra jamais.
+ */
+const WATCHDOG_MARGIN_MS = 700;
+
 const OFF_HANGOVER_MS = 140; // évite le clignotement parle/écoute entre 2 morceaux, sans trop retarder la reprise du micro
 const MAKEUP_GAIN = 3.0; // le PCM de Gemini n'est pas à pleine échelle → on remonte (limiteur derrière)
 
@@ -20,6 +27,12 @@ export interface VoicePlayerCallbacks {
    * fort », et sans ce rapport elle est INVISIBLE — le son sort quand même.
    */
   onRoute?(viaElement: boolean, detail: string): void;
+  /**
+   * Le chien de garde a dû forcer le retour à l'écoute (cf. armWatchdog). À
+   * journaliser : c'est le seul témoin d'un blocage qui, sans lui, rendait Mochi
+   * sourd sans laisser la moindre trace.
+   */
+  onStalled?(reason: string): void;
 }
 
 export class VoicePlayer {
@@ -33,6 +46,7 @@ export class VoicePlayer {
   private sources = new Set<AudioBufferSourceNode>();
   private speaking = false;
   private offTimer: number | null = null;
+  private watchdog: number | null = null;
   private pitch = 1; // >1 = voix plus aiguë (et un peu plus rapide) → effet « bébé »
 
   constructor(private readonly cb: VoicePlayerCallbacks) {}
@@ -112,7 +126,57 @@ export class VoicePlayer {
     };
 
     this.markSpeaking(true);
+    this.armWatchdog(ctx);
     this.cb.onLevel?.(peak);
+  }
+
+  /**
+   * Chien de garde de la parole. Sans lui, « Mochi parle » pouvait rester vrai
+   * POUR TOUJOURS, et comme l'envoi micro est coupé pendant qu'il parle, il
+   * devenait complètement sourd — jusqu'à ce qu'un barge-in ou le bouton STOP
+   * appelle `clear()`. Symptôme vécu : « il ne m'entend plus du tout pendant une
+   * à deux minutes », avec l'impression que ce sont les actions qui le coupent
+   * (elles arrivent au moment où il parle, d'où la confusion).
+   *
+   * ⚠️ LA CAUSE EST QUE `speaking` NE RETOMBAIT QUE PAR `src.onended`. Cet
+   * événement ne se produit pas si le contexte audio se suspend — écran éteint,
+   * appli passée en arrière-plan, bridage du navigateur : les sources programmées
+   * ne se terminent jamais, l'ensemble ne se vide pas, et plus rien ne remet le
+   * micro en marche. Un seul événement manquant suffisait à le rendre muet aux
+   * autres, définitivement.
+   *
+   * On sait pourtant exactement quand l'audio DOIT être fini : `nextTime`. Passé
+   * ce moment plus une marge, si on se croit encore en train de parler, c'est que
+   * l'événement s'est perdu — on force le retour à l'écoute.
+   */
+  private armWatchdog(ctx: AudioContext): void {
+    if (this.watchdog !== null) clearTimeout(this.watchdog);
+    const remainingMs = Math.max(0, (this.nextTime - ctx.currentTime) * 1000);
+    this.watchdog = window.setTimeout(() => {
+      this.watchdog = null;
+      if (!this.speaking) return;
+      // Le contexte suspendu est LE cas pathologique : le temps audio ne s'écoule
+      // plus, donc `nextTime` ne sera jamais atteint et aucune source ne finira.
+      const stalled = ctx.state !== 'running';
+      if (!stalled && ctx.currentTime < this.nextTime - 0.05) {
+        this.armWatchdog(ctx); // encore de l'audio devant : on repousse
+        return;
+      }
+      for (const s of this.sources) {
+        try {
+          s.onended = null;
+          s.stop();
+        } catch {
+          /* déjà terminée */
+        }
+      }
+      this.sources.clear();
+      this.nextTime = 0;
+      this.speaking = false;
+      this.cb.onSpeaking(false);
+      this.cb.onLevel?.(0);
+      this.cb.onStalled?.(stalled ? `moteur audio « ${ctx.state} »` : 'fin de parole perdue');
+    }, remainingMs + WATCHDOG_MARGIN_MS);
   }
 
   /** Coupe tout immédiatement (barge-in ou réflexe « stop »). */
@@ -127,6 +191,10 @@ export class VoicePlayer {
     }
     this.sources.clear();
     this.nextTime = 0;
+    if (this.watchdog !== null) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
     if (this.offTimer !== null) {
       clearTimeout(this.offTimer);
       this.offTimer = null;

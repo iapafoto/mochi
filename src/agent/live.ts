@@ -99,6 +99,8 @@ export interface LiveConversationCallbacks {
   onMicFrame?(peak: number): void;
   /** Réglages RÉELLEMENT appliqués au micro par le navigateur (cf. MicCapture). */
   onMicApplied?(summary: string): void;
+  /** La lecture de la voix s'est bloquee et le chien de garde l'a debloquee. */
+  onStalled?(reason: string): void;
   /**
    * Un function call de Mochi → intention (visage/moteur).
    *
@@ -143,6 +145,13 @@ export class LiveConversation {
       },
       onLevel: (lvl) => this.cb.onLevel?.(lvl),
       onRoute: (viaElement, detail) => this.cb.onRoute?.(viaElement, detail),
+      onStalled: (reason) => {
+        // Le micro etait coupe parce qu'on le croyait en train de parler : on le
+        // remet en marche tout de suite, sans attendre le prochain evenement.
+        this.speaking = false;
+        this.mic.setSending(true);
+        this.cb.onStalled?.(reason);
+      },
     });
     this.mic = new MicCapture({
       onChunk: (b64) =>

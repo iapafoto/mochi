@@ -489,6 +489,7 @@ if (geminiKey) {
       }
     },
     onLevel: (lvl) => (voiceLevel = lvl),
+    onStalled: (reason) => panel.logLine(`⚠ blocage de la voix rattrape (${reason}) — micro reouvert`),
     onMicFrame: (peak) => {
       // ⚠️ ON N'ANALYSE PAS PENDANT QUE MOCHI PARLE. Le micro l'entend par le
       // haut-parleur (l'envoi est coupé, pas la capture) : sans ce filtre il se

@@ -460,7 +460,18 @@ export class DevPanel {
     const logSection = section('Log intentions moteur');
     this.logEl = el('div') as HTMLDivElement;
     this.logEl.id = 'dp-log';
-    logSection.append(this.logEl);
+    // ⚠️ SORTIR LE JOURNAL DU TÉLÉPHONE, sinon il ne sert qu'à celui qui le lit à
+    // l'instant où ça arrive. Or les pannes intéressantes se produisent en
+    // situation — robot posé, à deux mètres — et se racontent ensuite de mémoire,
+    // c'est-à-dire mal. Le partage passe en premier : sur Android il ouvre le
+    // sélecteur d'applis (on s'envoie le texte), là où le presse-papier oblige à
+    // trouver ensuite où le coller.
+    const copyRow = el('div', 'dp-row');
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = '⎘ Partager le journal';
+    copyBtn.addEventListener('click', () => void this.exportLog(copyBtn));
+    copyRow.append(copyBtn);
+    logSection.append(this.logEl, copyRow);
     this.root.append(logSection);
 
     // Tampon de build, EN DEHORS du log — parce que dans le log il défilerait,
@@ -537,6 +548,46 @@ export class DevPanel {
   logLine(text: string): void {
     const time = new Date().toLocaleTimeString();
     this.appendLog(`<span class="time">${time}</span> ${escapeHtml(text)}`);
+  }
+
+  /**
+   * Envoie le journal complet ailleurs. Trois chemins, du meilleur au pire, parce
+   * qu'aucun n'est garanti sur un téléphone : le partage natif ouvre le sélecteur
+   * d'applis ; le presse-papier demande un contexte sécurisé ; et en dernier
+   * recours on ouvre le texte dans un onglet, d'où il reste sélectionnable à la
+   * main. Le bouton dit lequel a marché — un bouton qui ne répond rien laisserait
+   * croire que le journal est parti alors qu'il n'a peut-être rien fait.
+   */
+  private async exportLog(btn: HTMLButtonElement): Promise<void> {
+    const texte = `Mochi — journal ${new Date().toLocaleString()}\n\n${this.logEl.innerText}`;
+    const dire = (msg: string) => {
+      const avant = btn.textContent;
+      btn.textContent = msg;
+      window.setTimeout(() => (btn.textContent = avant), 2500);
+    };
+    const nav = navigator as Navigator & { share?: (d: { title?: string; text: string }) => Promise<void> };
+    if (nav.share) {
+      try {
+        await nav.share({ title: 'Journal Mochi', text: texte });
+        return; // le sélecteur s'est ouvert : ne rien annoncer, il est devant
+      } catch {
+        /* refusé ou annulé : on tente la suite */
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(texte);
+      dire('✓ copié');
+      return;
+    } catch {
+      /* pas de presse-papier : dernier recours */
+    }
+    const w = window.open('', '_blank');
+    if (w) {
+      w.document.write(`<pre style="white-space:pre-wrap;font:13px monospace">${escapeHtml(texte)}</pre>`);
+      w.document.close();
+    } else {
+      dire('⚠ impossible');
+    }
   }
 
   private appendLog(html: string): void {
