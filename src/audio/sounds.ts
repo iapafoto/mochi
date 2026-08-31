@@ -80,10 +80,18 @@ const PATTERNS: Record<SoundName, Blip[]> = {
     { f0: PENTA[1], dur: 0.1, gain: 0.4, type: 'square' },
     { f0: 392, dur: 0.16, gain: 0.4, type: 'square', delay: 0.1 },
   ],
-  // Court et MONTANT = une question, « mmh ? ». C'est le son qui comble le trou
-  // entre la fin de ta phrase et le premier mot du modèle : il doit être bref
-  // (il sera recouvert par la voix) et interrogatif (il annonce une réponse).
-  thinking: [{ f0: PENTA[2], f1: PENTA[4], dur: 0.13, gain: 0.3, type: 'sine', vibrato: 6 }],
+  // « Mmh ? » — deux notes, la seconde qui MONTE : une question.
+  //
+  // ⚠️ LA PREMIÈRE VERSION ÉTAIT UN BIP, PAS UN « MMH » : un sinus de 659 à 880 Hz
+  // pendant 130 ms à gain 0,3, soit 0,15 d'amplitude une fois le mode voix passé.
+  // Aigu, court, discret — inaudible en pratique, et sans aucun rapport avec le
+  // son vocal que son nom promettait. Ici : une octave plus bas (le registre où
+  // vit un « hmm »), en triangle plutôt qu'en sinus pour avoir des harmoniques,
+  // deux fois plus fort, et en deux temps pour que ça se lise comme une syllabe.
+  thinking: [
+    { f0: 330, dur: 0.06, gain: 0.45, type: 'triangle', vibrato: 4 },
+    { f0: 392, f1: 494, dur: 0.11, gain: 0.55, type: 'triangle', vibrato: 8, delay: 0.055 },
+  ],
   // Descente longue = la chute. Deux voix qui glissent vers le grave.
   fall: [
     { f0: PENTA[4], f1: 220, dur: 0.5, gain: 0.45, type: 'triangle', vibrato: 9 },
@@ -103,6 +111,19 @@ export class SoundEngine {
   private _voiceMode = false;
   /** Prévenu AVANT chaque son, avec sa durée : cf. onWillPlay. */
   private willPlay: ((durationMs: number, soundMs: number) => void) | null = null;
+  /** Prévenu UNE fois si les sons ne peuvent pas sortir (cf. play). */
+  private onSilent: ((reason: string) => void) | null = null;
+  private warnedSilent = false;
+
+  /** Signale que les blips sont muets, et pourquoi. Appelé une seule fois. */
+  onCannotPlay(cb: (reason: string) => void): void {
+    this.onSilent = cb;
+  }
+
+  /** État du moteur audio, pour le journal d'ouverture de session. */
+  get audioState(): string {
+    return this.ctx ? this.ctx.state : 'pas encore créé';
+  }
 
   get muted(): boolean {
     return this._muted;
@@ -142,7 +163,7 @@ export class SoundEngine {
   }
 
   private applyGain(): void {
-    if (this.master) this.master.gain.value = this._muted ? 0 : this._voiceMode ? 0.5 : 0.9;
+    if (this.master) this.master.gain.value = this._muted ? 0 : this._voiceMode ? 0.7 : 0.9;
   }
 
   /** Durée totale d'un motif (dernier blip programmé), en ms. */
@@ -161,7 +182,18 @@ export class SoundEngine {
   play(name: SoundName): void {
     if (this._muted) return;
     const ctx = this.ensure();
-    if (!ctx || ctx.state !== 'running') return; // pas encore débloqué
+    if (!ctx || ctx.state !== 'running') {
+      // ⚠️ NE PAS ABANDONNER EN SILENCE. Un AudioContext reste « suspended » tant
+      // qu'un geste ne l'a pas débloqué — et le démarrage automatique n'a
+      // justement AUCUN geste. Tous les blips se taisent alors pour de bon, ce qui
+      // est rigoureusement indiscernable d'un son mal réglé, ou trop court, ou
+      // couvert par la voix. On le dit une fois, sinon on ne le saura jamais.
+      if (!this.warnedSilent) {
+        this.warnedSilent = true;
+        this.onSilent?.(ctx ? `contexte audio « ${ctx.state} »` : 'pas de moteur audio');
+      }
+      return;
+    }
     // Le portillon d'abord : la queue couvre la réverbération du haut-parleur,
     // qui arrive APRÈS le dernier échantillon et se ferait entendre sans elle.
     const sonne = this.durationOf(name);
@@ -204,7 +236,10 @@ export class SoundEngine {
     if (!Ctor) return null;
     this.ctx = new Ctor();
     this.master = this.ctx.createGain();
-    this.master.gain.value = this._muted ? 0 : 0.9;
+    // Passer par applyGain plutôt que d'écrire 0.9 : le contexte est créé
+    // PARESSEUSEMENT, donc souvent APRÈS que le mode voix a été activé, et la
+    // valeur en dur ignorait ce mode. Un seul endroit décide du niveau.
+    this.applyGain();
     this.master.connect(this.ctx.destination);
     return this.ctx;
   }

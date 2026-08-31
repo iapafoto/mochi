@@ -525,7 +525,9 @@ if (geminiKey) {
     // Ce que le navigateur applique VRAIMENT, pas ce que la case à cocher promet.
     // `anti-écho OUI` est à lui seul l'explication d'un Mochi qui n'entend qu'à
     // 5 cm — et rien d'autre dans l'app ne permettait de le constater.
-    onMicApplied: (summary) => panel.logLine(`🎙 ${summary}`),
+    // On y accroche l'état du moteur de sons : c'est la même question — « est-ce
+    // que ça marche vraiment ? » — et elle se pose au même instant.
+    onMicApplied: (summary) => panel.logLine(`🎙 ${summary} · sons ${sound.audioState}`),
     dispatch: (call) => {
       const res = dispatcher.dispatch(call);
       if (!res.ok) panel.logLine(`⚠ ${res.name}: ${res.detail}`);
@@ -538,6 +540,11 @@ if (geminiKey) {
 // branchement qui rend les sons jouables pendant une conversation — sans lui, il
 // fallait tous les couper, et c'est ce qu'on faisait.
 sound.onWillPlay((ms, soundMs) => live?.gateMicFor(ms, soundMs));
+// Les blips peuvent etre muets sans que rien ne le dise : un AudioContext reste
+// « suspended » tant qu'un geste ne l'a pas debloque, et le demarrage automatique
+// n'en a aucun. « Je n'ai jamais entendu le mmh » ne se distingue pas autrement
+// d'un son trop discret.
+sound.onCannotPlay((reason) => panel.logLine(`⚠ sons muets : ${reason} — touche l'ecran une fois`));
 panel.setLiveSupported(!!live);
 // État de la clé : « saisie sur cet appareil » ne se déduit pas de « une clé est
 // active » — en dev, `.env.local` fait marcher Gemini sans que rien ne soit
