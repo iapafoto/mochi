@@ -112,6 +112,13 @@ export const INTENT_DECLARATIONS: FunctionDeclaration[] = [
   },
   // --- Déplacement RÉEL (BLE → ESP32) ---
   {
+    name: 'stop',
+    description:
+      "ARRÊT IMMÉDIAT de tout déplacement en cours (il reste debout). Appelle-la dès qu'on te dit "
+      + "« stop », « arrête », « attends », ou dès que quelque chose semble mal tourner. "
+      + "Elle ne coûte rien et n'a aucun effet s'il ne bouge pas : dans le doute, appelle-la.",
+  },
+  {
     name: 'forward',
     description:
       'DÉPLACEMENT RÉEL : avance de N centimètres. À n’appeler que si on demande de bouger.',

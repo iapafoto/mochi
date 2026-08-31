@@ -71,6 +71,18 @@ export class Dispatcher {
       if (refus) return { name: call.name, ok: false, detail: refus };
     }
     switch (call.name) {
+      // ⚠️ VOLONTAIREMENT HORS de MOVING_INTENTS, donc jamais soumis à `moveGate`.
+      // Un arrêt refusé parce que « le robot n'est pas en équilibre » serait un
+      // contresens : c'est exactement la situation où on veut tout couper. Il n'y a
+      // aucun état dans lequel « arrête-toi » soit une mauvaise idée.
+      case 'stop': {
+        // Même ordre que le bouton du panneau : couper le réémetteur AVANT le
+        // STOP, sinon la consigne suivante du chemin repart 100 ms plus tard.
+        this.moves?.clear();
+        this.drive?.stop();
+        this.transport.sendIntent(Op.STOP);
+        return ok(call.name, 'tout arrêté');
+      }
       case 'express': {
         const emotion = String(a.emotion ?? 'neutral') as Emotion;
         const intensity = clamp01(num(a.intensity, 0.8));
