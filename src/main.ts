@@ -508,6 +508,7 @@ if (geminiKey) {
     dispatch: (call) => {
       const res = dispatcher.dispatch(call);
       if (!res.ok) panel.logLine(`⚠ ${res.name}: ${res.detail}`);
+      return bodyAwareResult(call.name, res);
     },
   });
 }
@@ -591,6 +592,41 @@ panel.setBuildId(__BUILD_ID__);
 panel.logLine(`ℹ build ${__BUILD_ID__} — clé Gemini : ${keySource}`);
 
 console.info('[Mochi] prêt.', agent.info, '| build', __BUILD_ID__);
+
+/**
+ * Traduit un résultat de dispatch en réponse d'outil DESTINÉE AU MODÈLE, en y
+ * ajoutant l'état de son corps quand ça change quelque chose.
+ *
+ * ⚠️ LE CAS QUI MANQUAIT, ET QUI LE RENDAIT MENTEUR : le lien BLE coupé. `moveGate`
+ * laisse volontairement passer les déplacements dans ce cas — pour que le transport
+ * journalise la trame en « non émis », qui est la trace permettant de vérifier le
+ * protocole sans matériel. Parfait pour le banc, désastreux pour Mochi : l'ordre
+ * partait, personne ne le refusait, et il racontait une figure que son corps, resté
+ * en rade, n'exécutait pas. On garde donc la trace ET on le prévient.
+ *
+ * ⚠️ Ce n'est PAS une redite de `moveGate`. Celle-là décide s'il faut ÉMETTRE ;
+ * celle-ci décide ce qu'on RACONTE au modèle. Les deux réponses diffèrent
+ * précisément dans le cas ci-dessus, et c'est tout l'intérêt de les séparer.
+ */
+function bodyAwareResult(
+  name: string,
+  res: { ok: boolean; detail: string },
+): { ok: boolean; detail: string } {
+  if (!res.ok) return { ok: false, detail: res.detail };
+  if (!MOVING_INTENT_NAMES.has(name)) return { ok: true, detail: res.detail };
+  if (!transport.connected) {
+    return { ok: false, detail: "tu n'es pas connecté à ton corps — rien n'a bougé" };
+  }
+  if (!lastTelemetry) {
+    return { ok: false, detail: "ton corps ne répond pas encore — rien n'a bougé" };
+  }
+  return { ok: true, detail: res.detail };
+}
+
+/** Doit rester aligné sur MOVING_INTENTS (agent/dispatcher.ts). */
+const MOVING_INTENT_NAMES = new Set([
+  'forward', 'backward', 'turn', 'circle', 'path', 'nod', 'bow', 'wiggle',
+]);
 
 // --- Réflexes de posture -----------------------------------------------------
 //

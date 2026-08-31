@@ -86,8 +86,16 @@ export interface LiveConversationCallbacks {
   onMicFrame?(peak: number): void;
   /** Réglages RÉELLEMENT appliqués au micro par le navigateur (cf. MicCapture). */
   onMicApplied?(summary: string): void;
-  /** Un function call de Mochi → intention (visage/moteur). */
-  dispatch(call: IntentCall): void;
+  /**
+   * Un function call de Mochi → intention (visage/moteur).
+   *
+   * Le retour repart vers le MODÈLE comme réponse d'outil : c'est le seul chemin
+   * par lequel le monde réel peut le contredire. `ok: false` lui dit que son ordre
+   * n'a rien fait, et `detail` pourquoi — « pas connecté à mon corps », « je suis
+   * couché ». Rendre `void` (ou toujours « ok ») le laisse raconter des figures
+   * qu'il n'exécute pas.
+   */
+  dispatch(call: IntentCall): { ok: boolean; detail: string } | void;
 }
 
 export class LiveConversation {
@@ -298,14 +306,26 @@ export class LiveConversation {
     // 1) Function calls → intentions (visage/moteur) + réponse d'outil à la volée.
     const fcs = m.toolCall?.functionCalls;
     if (fcs?.length) {
-      for (const fc of fcs) {
-        this.cb.dispatch({ name: fc.name ?? '', args: (fc.args ?? {}) as Record<string, unknown> });
-      }
+      // ⚠️ ON REND LE VRAI RÉSULTAT, PAS UN « ok » DE PRINCIPE. C'était écrit en
+      // dur ici, et c'est ce qui rendait Mochi menteur sans qu'il le sache : quand
+      // le lien BLE tombait, ou qu'il était désarmé, ou couché, l'ordre n'avait
+      // aucun effet — mais le modèle recevait « ok » et continuait de raconter la
+      // figure qu'il croyait exécuter, corps inerte. Aucun signal ne remontait
+      // jamais du monde réel vers lui ; il ne pouvait PAS savoir.
+      const results = fcs.map((fc) => ({
+        fc,
+        outcome: this.cb.dispatch({
+          name: fc.name ?? '',
+          args: (fc.args ?? {}) as Record<string, unknown>,
+        }),
+      }));
       this.session?.sendToolResponse({
-        functionResponses: fcs.map((fc) => ({
+        functionResponses: results.map(({ fc, outcome }) => ({
           id: fc.id,
           name: fc.name,
-          response: { result: 'ok' },
+          response: outcome?.ok === false
+            ? { result: 'sans effet', raison: outcome.detail }
+            : { result: 'ok', ...(outcome?.detail ? { detail: outcome.detail } : {}) },
         })),
       });
     }
