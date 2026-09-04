@@ -233,21 +233,27 @@ const vad = new LocalVad({
   },
 });
 
-// Anime la bouche pendant que Mochi parle (piloté par l'amplitude de la voix).
-let voiceLevel = 0;
-let flapTimer: number | null = null;
-function startMouthFlap(): void {
-  if (flapTimer !== null) return;
-  flapTimer = window.setInterval(() => {
-    const amp = Math.min(1, voiceLevel * 1.6);
-    const v = 0.1 + amp * 0.5 * (0.55 + Math.random() * 0.45);
-    face.setChannel('mouthOpen', v, 0.05);
-  }, 90);
+// Anime la bouche pendant que Mochi parle, CALÉE SUR L'ENVELOPPE RÉELLE de
+// l'audio qui sort : on lit le RMS instantané de la voix à chaque frame (cf.
+// VoicePlayer.readMouthEnvelope) plutôt que de flapper au hasard sur le pic d'un
+// morceau. Résultat : les mouvements labiaux suivent vraiment ce qu'on entend.
+const MOUTH_GAIN = 4; // enveloppe → ouverture ; le RMS post-limiteur est bas, on remonte
+let mouthSyncRaf: number | null = null;
+function startMouthSync(): void {
+  if (mouthSyncRaf !== null) return;
+  const tick = (): void => {
+    const env = live?.readMouthEnvelope() ?? 0;
+    // plancher léger (bouche jamais tout à fait close en parlant) + plafond à 0.7.
+    const v = 0.1 + Math.min(1, env * MOUTH_GAIN) * 0.6;
+    face.setChannel('mouthOpen', v, 0.05); // tau court : le lissage final vit dans FaceState
+    mouthSyncRaf = requestAnimationFrame(tick);
+  };
+  mouthSyncRaf = requestAnimationFrame(tick);
 }
-function stopMouthFlap(): void {
-  if (flapTimer !== null) {
-    clearInterval(flapTimer);
-    flapTimer = null;
+function stopMouthSync(): void {
+  if (mouthSyncRaf !== null) {
+    cancelAnimationFrame(mouthSyncRaf);
+    mouthSyncRaf = null;
   }
   face.setChannel('mouthOpen', REST_FACE.mouthOpen, 0.14);
 }
@@ -265,12 +271,12 @@ function startMoodLoop(): void {
     renderer.setAmbient(ambientFromMood(m));
     panel.setMood(m.valence, m.arousal);
 
-    // Le visage au repos reflète l'humeur quand aucune émotion récente (le
-    // flap de bouche pendant que Mochi parle a priorité → on n'y touche pas).
+    // Le visage au repos reflète l'humeur quand aucune émotion récente (la
+    // bouche synchronisée pendant que Mochi parle a priorité → on n'y touche pas).
     // L'écoute active aussi : elle écrit les mêmes canaux 25 fois par seconde,
     // et cette boucle-ci, qui tourne à 10 Hz, gagnerait une fois sur deux — le
     // visage attentif se ferait effacer en plein milieu d'une phrase.
-    if (mood.idleFor > 3.5 && flapTimer === null && !backchannel.active) {
+    if (mood.idleFor > 3.5 && mouthSyncRaf === null && !backchannel.active) {
       face.setTarget({ channels: restingFaceFromMood(m), tau: 0.9 });
     }
 
@@ -474,7 +480,7 @@ if (geminiKey) {
       sound.setVoiceMode(running);
       if (running) keepAwake();
       else {
-        stopMouthFlap();
+        stopMouthSync();
         backchannel.stop();
         vad.reset();
       }
@@ -486,24 +492,23 @@ if (geminiKey) {
     onMochiText: (t) => panel.logLine(`💬 Mochi : ${t}`),
     onSpeakingChange: (speaking) => {
       if (speaking) {
-        startMouthFlap();
+        startMouthSync();
         // Il prend la parole : l'écoute s'arrête, et la détection repart de zéro.
         // Sans ce reset, sa propre voix — que le micro entend malgré tout — laisse
         // le détecteur en état « ça parle », et le tour suivant démarre déjà ouvert.
         backchannel.stop();
         vad.reset();
       } else {
-        stopMouthFlap();
+        stopMouthSync();
       }
     },
-    onLevel: (lvl) => (voiceLevel = lvl),
     onStalled: (reason) => panel.logLine(`⚠ blocage de la voix rattrape (${reason}) — micro reouvert`),
     onMicFrame: (peak) => {
       // ⚠️ ON N'ANALYSE PAS PENDANT QUE MOCHI PARLE. Le micro l'entend par le
       // haut-parleur (l'envoi est coupé, pas la capture) : sans ce filtre il se
       // détecterait lui-même, ouvrirait une écoute active sur sa propre voix, et
       // le compteur de silence ci-dessous prendrait ses tirades pour un blanc.
-      if (flapTimer !== null) {
+      if (mouthSyncRaf !== null) {
         lastHeardMs = Date.now();
         return;
       }

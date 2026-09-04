@@ -182,6 +182,14 @@ export class LiveConversation {
   }
 
   /**
+   * Enveloppe RMS 0..1 de la voix qui sort à cet instant, pour caler la bouche
+   * (cf. VoicePlayer.readMouthEnvelope). À appeler par frame côté affichage.
+   */
+  readMouthEnvelope(): number {
+    return this.player.readMouthEnvelope();
+  }
+
+  /**
    * Rend le micro sourd pendant `ms` — le temps d'un blip kawaii, pour qu'il ne
    * revienne pas dans la session (la VAD est en sensibilité haute : un « pouet »
    * suffirait à ouvrir un tour).

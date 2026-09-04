@@ -48,12 +48,40 @@ export class VoicePlayer {
   private offTimer: number | null = null;
   private watchdog: number | null = null;
   private pitch = 1; // >1 = voix plus aiguë (et un peu plus rapide) → effet « bébé »
+  private analyser: AnalyserNode | null = null; // tap non destructif de la sortie
+  private envBuf: Float32Array<ArrayBuffer> | null = null; // scratch pour getFloatTimeDomainData
+  private env = 0; // enveloppe RMS lissée courante (0..1), pilote l'ouverture de bouche
 
   constructor(private readonly cb: VoicePlayerCallbacks) {}
 
   /** Décale la hauteur de la voix (1 = naturelle, 1.1–1.3 = plus aiguë/bébé). */
   setPitch(factor: number): void {
     this.pitch = Math.max(0.5, Math.min(2, factor));
+  }
+
+  /**
+   * Enveloppe RMS 0..1 de la voix qui sort À CET INSTANT — à lire une fois par
+   * frame pour caler l'ouverture de la bouche dessus. Contrairement à `onLevel`
+   * (le pic d'un morceau AU MOMENT OÙ IL EST PROGRAMMÉ, parfois une seconde à
+   * l'avance), ceci mesure ce que le haut-parleur émet vraiment maintenant : c'est
+   * ce qui rend les mouvements labiaux synchrones. Attaque rapide / relâche lente
+   * pour une bouche franche mais sans tremblotement ; décroît vers 0 au silence.
+   */
+  readMouthEnvelope(): number {
+    const a = this.analyser;
+    const buf = this.envBuf;
+    if (!a || !buf) return 0;
+    if (!this.speaking) {
+      this.env *= 0.6; // relâche douce vers bouche fermée entre deux prises de parole
+      return this.env;
+    }
+    a.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length);
+    // attaque (rms monte) rapide, relâche (rms baisse) lente.
+    this.env = rms > this.env ? rms * 0.5 + this.env * 0.5 : rms * 0.15 + this.env * 0.85;
+    return this.env;
   }
 
   /** À appeler dans un geste utilisateur pour autoriser l'audio. */
@@ -227,6 +255,9 @@ export class VoicePlayer {
     this.ctx = null;
     this.gain = null;
     this.tail = null;
+    this.analyser = null;
+    this.envBuf = null;
+    this.env = 0;
     this.streamDest = null;
     this.sinkEl = null;
     this.routedToElement = false;
@@ -273,14 +304,27 @@ export class VoicePlayer {
     limiter.attack.value = 0.003;
     limiter.release.value = 0.1;
     this.gain.connect(limiter);
-    this.tail = limiter;
+
+    // Analyseur en sortie : tap NON destructif du signal final (post-limiteur =
+    // exactement ce qu'on entend). Lu par frame via readMouthEnvelope() pour
+    // caler l'ouverture de la bouche sur l'enveloppe RÉELLE de la voix, au lieu
+    // d'un flap aléatoire sur le pic d'un morceau. C'est un nœud pass-through :
+    // il ne modifie pas le son, donc on branche les sorties DERRIÈRE lui.
+    const analyser = this.ctx.createAnalyser();
+    analyser.fftSize = 1024; // ~20 ms de fenêtre : assez court pour suivre les syllabes
+    limiter.connect(analyser);
+    this.analyser = analyser;
+    this.envBuf = new Float32Array(analyser.fftSize);
+    this.tail = analyser;
 
     // Chemin direct (repli, actif par défaut). resume() bascule vers le <audio>
     // element s'il parvient à jouer (haut-parleur mobile au lieu de l'écouteur).
-    limiter.connect(this.ctx.destination);
+    // Les deux sorties partent de `tail` (l'analyseur) : resume() disconnecte
+    // `tail` de ctx.destination, il faut donc que ce soit le nœud branché dessus.
+    this.tail.connect(this.ctx.destination);
     try {
       this.streamDest = this.ctx.createMediaStreamDestination();
-      limiter.connect(this.streamDest);
+      this.tail.connect(this.streamDest);
       const el = new Audio();
       el.autoplay = true;
       el.volume = 1;
